@@ -1,0 +1,6 @@
+﻿"Pin Spacing"= 5mm
+"Connector Height"= 10mm
+"Connector Depth"= 7mm
+"Connector Width"= "Pin Spacing"
+"Set Screw Diameter"= 3.5mm
+"Pin Width"= .9mm

@@ -1,0 +1,10 @@
+PrintAllInputs: starting the Xbox client on the ESP32-S3
+XboxControllerR4 begin() failed, lastError() = 1
+  The ESP32-S3 answers (bridge firmware 0.6.0) but does not know AT+XBOXVERSION?:
+  it is most likely the stock firmware. Flash the forked firmware (library README).
+XboxControllerR4 begin() failed, lastError() = 1
+  The ESP32-S3 answers (bridge firmware 0.6.0) but does not know AT+XBOXVERSION?:
+  it is most likely the stock firmware. Flash the forked firmware (library README).
+XboxControllerR4 begin() failed, lastError() = 1
+  The ESP32-S3 answers (bridge firmware 0.6.0) but does not know AT+XBOXVERSION?:
+  it is most likely the stock firmware. Flash the forked firmware (library README).

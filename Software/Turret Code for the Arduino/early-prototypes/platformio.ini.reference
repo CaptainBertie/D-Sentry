@@ -1,0 +1,50 @@
+; PlatformIO Project Configuration File
+;
+;   Build options: build flags, source filter
+;   Upload options: custom upload port, speed and extra flags
+;   Library options: dependencies, extra library storages
+;   Advanced options: extra scripting
+;
+; Please visit documentation for the other options and examples
+; https://docs.platformio.org/page/projectconf.html
+
+; Each test lives in its own .cpp with its own setup()/loop(), so each gets
+; its own env with a build_src_filter that isolates just that one file --
+; otherwise PlatformIO tries to link multiple setup()/loop() definitions
+; into one firmware. Build/upload a given test from the PlatformIO env
+; picker (bottom status bar in VS Code) or `pio run -e <env> -t upload`.
+
+[env:uno_r4_wifi]
+platform = renesas-ra
+board = uno_r4_wifi
+framework = arduino
+build_src_filter = -<*> +<main.cpp>
+
+[env:display_test]
+platform = renesas-ra
+board = uno_r4_wifi
+framework = arduino
+build_src_filter = -<*> +<DisplayTest.cpp>
+lib_deps =
+    LiquidCrystal_I2C
+    Adafruit NeoPixel
+
+[env:stepper_test]
+platform = renesas-ra
+board = uno_r4_wifi
+framework = arduino
+build_src_filter = -<*> +<StepperTest.cpp>
+lib_deps =
+    AccelStepper
+
+[env:stepper_hold_test]
+platform = renesas-ra
+board = uno_r4_wifi
+framework = arduino
+build_src_filter = -<*> +<StepperHoldTest.cpp>
+
+[env:stepper_manual_test]
+platform = renesas-ra
+board = uno_r4_wifi
+framework = arduino
+build_src_filter = -<*> +<StepperManualTest.cpp>

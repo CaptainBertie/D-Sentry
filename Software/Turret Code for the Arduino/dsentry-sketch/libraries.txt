@@ -1,0 +1,14 @@
+# libraries.txt -- pinned versions for the D-Sentry RA4M1 sketch (also in dsentry/sketch.yaml).
+# tools/build.sh compiles with arduino-cli and PlatformIO and fails unless the copies they
+# actually used match these lines exactly.
+#
+# Install on a new machine:
+#   arduino-cli core install arduino:renesas_uno@1.6.0
+#   arduino-cli lib install "Adafruit NeoPixel@1.15.5" "LiquidCrystal I2C@1.1.2"
+# Wire, EEPROM and BlockDevices (EEPROM's data flash driver) are bundled with the core. Servo is not
+# used (the trigger servo is the core's PwmOut).
+#
+# SPDX-License-Identifier: MIT
+core arduino:renesas_uno@1.6.0
+lib Adafruit NeoPixel@1.15.5
+lib LiquidCrystal I2C@1.1.2

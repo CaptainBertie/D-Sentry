@@ -1,0 +1,7 @@
+# D-Sentry PC relay (docs/architecture.md section 7). Install into the project venv:
+#   "<repo>/.venv/bin/python" -m pip install -r D-SentryCode/relay-pc/requirements.txt
+# pygame reads the game pad (pygame._sdl2.controller, SDL 2.28.4); do not install pygame-ce
+# next to it (both unpack into pygame/). pyserial talks to the UNO R4 WiFi's USB port.
+# --demo, --udp and the dashboard need neither; the tests skip what they cannot import.
+pygame==2.6.1
+pyserial==3.5

@@ -1,0 +1,6 @@
+qemu/
+run/
+logs/
+*.bin
+*.tar.xz
+*.c

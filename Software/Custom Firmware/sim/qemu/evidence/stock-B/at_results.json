@@ -1,0 +1,74 @@
+[
+ {
+  "cmd": "AT\r\n",
+  "reply_hex": "4F 4B 0D 0A",
+  "reply_repr": "b'OK\\r\\n'",
+  "len": 4,
+  "first_byte_ms": 1.9,
+  "t_sent": 1.43
+ },
+ {
+  "cmd": "AT+GMR\r\n",
+  "reply_hex": "3C 6C 65 6E 3E 0D 0A 4F 4B 0D 0A",
+  "reply_repr": "b'<len>\\r\\nOK\\r\\n'",
+  "len": 11,
+  "first_byte_ms": 13.8,
+  "t_sent": 3.436
+ },
+ {
+  "cmd": "AT+FWVERSION?\r\n",
+  "reply_hex": "2B 46 57 56 45 52 53 49 4F 4E 3A 20 30 2E 36 2E 30 0D 0A 4F 4B 0D 0A",
+  "reply_repr": "b'+FWVERSION: 0.6.0\\r\\nOK\\r\\n'",
+  "len": 23,
+  "first_byte_ms": 3.6,
+  "t_sent": 5.437
+ },
+ {
+  "cmd": "AT+XBOXVERSION?\r\n",
+  "reply_hex": "45 52 52 4F 52 0D 0A",
+  "reply_repr": "b'ERROR\\r\\n'",
+  "len": 7,
+  "first_byte_ms": 3.2,
+  "t_sent": 7.443
+ },
+ {
+  "cmd": "AT+XBOXSTATE?\r\n",
+  "reply_hex": "45 52 52 4F 52 0D 0A",
+  "reply_repr": "b'ERROR\\r\\n'",
+  "len": 7,
+  "first_byte_ms": 1.9,
+  "t_sent": 9.448
+ },
+ {
+  "cmd": "AT+FWVERSION?\r\n",
+  "reply_hex": "2B 46 57 56 45 52 53 49 4F 4E 3A 20 30 2E 36 2E 30 0D 0A 4F 4B 0D 0A",
+  "reply_repr": "b'+FWVERSION: 0.6.0\\r\\nOK\\r\\n'",
+  "len": 23,
+  "first_byte_ms": 2.1,
+  "t_sent": 41.458
+ },
+ {
+  "cmd": "AT+HCIAVAILABLE?\r\n",
+  "reply_hex": "",
+  "reply_repr": "b''",
+  "len": 0,
+  "first_byte_ms": null,
+  "t_sent": 43.463
+ },
+ {
+  "cmd": "AT+FWVERSION?\r\n",
+  "reply_hex": "2B 46 57 56 45 52 53 49 4F 4E 3A 20 30 2E 36 2E 30 0D 0A 4F 4B 0D 0A",
+  "reply_repr": "b'+FWVERSION: 0.6.0\\r\\nOK\\r\\n'",
+  "len": 23,
+  "first_byte_ms": 4.0,
+  "t_sent": 45.465
+ },
+ {
+  "cmd": "AT+FWVERSION?\r\n",
+  "reply_hex": "2B 46 57 56 45 52 53 49 4F 4E 3A 20 30 2E 36 2E 30 0D 0A 4F 4B 0D 0A",
+  "reply_repr": "b'+FWVERSION: 0.6.0\\r\\nOK\\r\\n'",
+  "len": 23,
+  "first_byte_ms": 3.1,
+  "t_sent": 50.475
+ }
+]

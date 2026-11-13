@@ -1,0 +1,23 @@
+:name: Arduino UNO R4 WiFi (RA4M1 side) with a scripted ESP32-S3
+:description: Runs a sketch ELF on Renode's RA4M1 model; Serial (SCI9) goes to $serial_out, and fake_esp32.py answers the AT link (Serial2 = SCI1).
+
+# Required variables (set them before including this file):
+#   $elf         the sketch ELF from arduino-cli compile --output-dir
+#   $serial_out  file that receives everything the sketch prints on Serial
+#   $at_tx_out   file that receives every byte the RA4M1 sends on the AT link
+#   $sci_model   @path of UnoR4_SCI.cs
+#   $platform    @path of uno_r4_wifi.repl
+
+include $sci_model
+mach create "uno_r4_wifi"
+machine LoadPlatformDescription $platform
+
+sysbus LoadELF $elf
+# The Arduino bootloader owns 0x0000-0x3FFF; the sketch's vector table is at 0x4000.
+cpu VectorTableOffset 0x4000
+
+sysbus.sci9 CreateFileBackend $serial_out true
+sysbus.sci1 CreateFileBackend $at_tx_out true
+# The caller then attaches the ESP32-S3 stand-in (Renode does not expand $variables inside the
+# hook's quoted Python, so the path to fake_esp32.py is written out literally by run.sh):
+#   sysbus.sci1 AddLineHook "AT" "import sys; sys.path.append(r'<dir>') if r'<dir>' not in sys.path else None; import fake_esp32; fake_esp32.on_line(machine, uart, line)"

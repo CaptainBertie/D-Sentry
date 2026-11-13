@@ -1,0 +1,477 @@
+# D-Sentry architecture (the build contract)
+
+> **Note on paths below:** this document was written against the original development
+> repo's layout (`D-SentryCode/`, `../firmware`, symlinked `config.h`, etc.). It's kept
+> here unedited for the engineering history and reasoning — the "owner decisions that
+> override the spec" section especially. For where things actually live in *this* repo,
+> see `../Custom Firmware/README.md` and `../Turret Code for the Arduino/README.md`.
+
+This file is the contract every part of D-Sentry is built against. `D-SENTRY_SPEC.md` (repo root)
+is the original spec; where this file disagrees with it, this file wins, because each difference
+below is a decision the owner made on 2026-11-03 or a fact research proved.
+
+## 0. Owner decisions that override the spec
+
+| Spec says | Built instead | Why |
+|---|---|---|
+| New Bluepad32 ESP32 firmware pushing binary ControlPackets on the inter-chip UART (§5, §6) | The existing NimBLE fork in `../firmware` (README.md, DECISIONS.md D05-D18), extended. The RA4M1 talks to it over the stock AT link (`AT+XBOXSTATE?` etc.). | The fork already pairs with the owner's pad and keeps USB sketch uploads working; Bluepad32 clashes with the bridge's ESP32 core (D05). |
+| WiFi mode: ESP32 hosts the pad over BLE *and* a UDP server | BT mode: the turret pairs directly with the pad over BLE. WiFi mode: the PC pairs with the pad; the PC relay sends ControlPackets over UDP; the ESP32 never runs BLE and WiFi at the same time. | Owner. |
+| "Do not implement a web UI … telemetry" (§13) | The PC relay serves a local web dashboard: detailed telemetry, a simple 3D render of the turret, optional keyboard controls. Still no telemetry *logging to files*, no OTA, one controller. | Owner. |
+| `dsentry/` folder | `D-SentryCode/` | Owner. |
+| `config.h` at the folder root, RA4M1 includes it | `D-SentryCode/config.h` is the only copy and the source of truth (wiring included: L298N on D9/D10/D11, servo D12, LEDs D13). The sketch reaches it through a symlink. Owner set the drivers to 1/8 (MS0+MS1 capped), matching `MICROSTEPS 8`. | Owner. |
+| Old dashboard mapping (A = semi/full, X = arm, 10 % trigger) | Spec §3.2 mapping (A = arm, B = semi/full, X = magazine reset, 60/40 % trigger). | Spec is newer. |
+| LEDs (§3.8): ARMED yellow / orange by fire mode, FIRING red, magenta blink with the trigger held at ammo 0; lockout at 0 (§3.4, `FIRE_LOCKOUT_WHEN_EMPTY` true) | ARMED red when a pull would fire now, yellow while the next shot is not available; a purple double flash at ammo 0 until X; firing continues at 0 (`FIRE_LOCKOUT_WHEN_EMPTY` false). SERVO ADJUST (was SERVO TEACH) on Menu, not Y. (Section 6.) | Owner, 2026-11-03. |
+| "Do not persist home position or settings to flash (RAM only, by design)" (§13) | SERVO ADJUST saves the trigger servo's REST and FIRE in the RA4M1's data flash (core EEPROM library, `ServoStore`), and every boot uses them in place of `config.h`'s; View in SERVO ADJUST restores `config.h`'s. The save (about 50 ms) is the one blocking call allowed in `loop()` (rule 2). Home and every other setting stay RAM only. (Section 6.) | Owner, 2026-11-03. |
+
+No hardware is attached during the build. Everything is compiled and tested on the Mac; the
+owner tunes on the bench afterwards.
+
+## 1. Folder layout
+
+```
+D-SentryCode/
+  config.h                      the only tunables file (owner's sections 1-12, plus 13 and 14 added by the build)
+  README.md                     quick start
+  protocol/
+    protocol_spec.py            SINGLE SOURCE OF TRUTH for every packet, enum and AT command (Python data)
+    dsentry_protocol.h          GENERATED C header (structs, enums, CRC, encode/decode); never edit by hand
+  firmware-ra4m1/
+    platformio.ini              PlatformIO env (owner's VS Code workflow)
+    sketch.yaml, libraries.txt  arduino-cli profile + pinned library versions
+    dsentry/                    the Arduino sketch (folder name = sketch name)
+      dsentry.ino
+      config.h            -> ../../config.h                        (symlink)
+      dsentry_protocol.h  -> ../../protocol/dsentry_protocol.h     (symlink)
+      xbox_r4_protocol.h  -> ../../../protocol/xbox_r4_protocol.h  (symlink, the fork's wire format)
+      src/                one .h/.cpp pair per module (section 5); src files include "../config.h"
+  firmware-esp32s3/README.md    the fork lives in ../firmware (repo root); lists every D-Sentry file there
+  relay-pc/
+    dsentry_relay.py            CLI entry point
+    dsentry/                    Python package: config, protocol (GENERATED), framing, transports, pad, keyboard, relay, web
+    web/index.html              the dashboard page: one file, inline CSS/JS, hand-rolled canvas 3D renderer
+    requirements.txt            pygame==2.6.1, pyserial==3.5
+    tests/
+  sim/                          host build of the REAL RA4M1 logic with a fake HAL -> `dsentry_sim`
+  tests/                        host C++ unit tests (tests/unit), acceptance tests against dsentry_sim (tests/acceptance), run.sh
+  tools/
+    build.sh                    builds and tests everything that can be built without a board
+    gen_protocol.py             protocol_spec.py -> dsentry_protocol.h, relay-pc/dsentry/protocol.py, docs/protocol.md, ESP32 copy
+    sync_config.py              config.h sections 10, 11 (+ ESP32 parts of 13) -> ../firmware/UNOR4USBBridge/dsentry_config.h
+    check_literals.py           acceptance item 20
+    bench_console.py            types ControlPackets and shell commands at the RA4M1 over USB serial
+    i2c_scan/i2c_scan.ino       finds the LCD address
+  docs/
+    architecture.md (this file), protocol.md (GENERATED), flashing.md, tuning.md, bench-checklist.md
+```
+
+Every generated file carries a "GENERATED by tools/… — do not edit" banner, and `--check`
+modes of the generators fail the test run when a generated file is stale.
+
+## 2. Hard rules
+
+1. **Numbers.** No pin, speed, angle, colour, timeout, threshold, size, rate or unit factor is
+   written as a literal in any D-Sentry C/C++ source. They come from `config.h` (tunables in
+   sections 1-13, fixed unit/hardware constants in section 14) or from `dsentry_protocol.h`.
+   Allowed literals: `0`, `1`, `0.0f`, `1.0f`, loop counters, array indices. `tools/check_literals.py`
+   enforces this on `firmware-ra4m1/dsentry/**` and on the D-Sentry files in the ESP32 fork.
+   While parallel agents work, a constant they need that is missing goes at the top of their own
+   `.cpp` inside a block `// CONFIG-PENDING begin` … `// CONFIG-PENDING end`; the integration
+   stage moves those blocks into `config.h`. Nobody but the integration stage edits `config.h`.
+   Python and JS read tunables from `config.h` at run time (relay-pc/dsentry/config.py parses it);
+   pure presentation values (CSS, render geometry) are exempt but must be named constants.
+2. **No blocking in `loop()`.** No `delay()` outside `setup()`; no busy-wait longer than a few µs
+   in any `update()`. Serial output goes through paced queues (section 4.3). No `printf`.
+   No serial writes from an ISR. One documented exception (owner, 2026-11-03): SERVO ADJUST's save,
+   `hal::storeSave()` (about 50 ms typical, hal.h), only in DISARMED with no stroke running and no
+   axis moving; the step interrupt keeps running through it.
+3. **LED brightness.** Every channel byte that reaches the LED hardware passes through exactly one
+   function that scales by `LED_MAX_BRIGHTNESS / 255`; a `static_assert(LED_MAX_BRIGHTNESS <= 127)`
+   and a runtime check (count + log) guard it.
+4. **Portable logic.** Every module except `hal_arduino.cpp` compiles on the Mac (clang++,
+   `-std=gnu++17`) against `hal.h`. `hal_arduino.cpp` is wrapped in `#ifdef ARDUINO`.
+   Modules never include Arduino library headers.
+5. **No cross-module globals.** Modules are objects created in `dsentry.ino` (and in `sim/`), wired
+   with references in `begin()`. `TurretState` is the only place that decides who may act.
+6. **Never include** WiFiS3, Preferences, OTAUpdate, SoftwareATSE, ArduinoBLE or XboxControllerR4
+   on the RA4M1: they own `Serial2` through the `modem` global, and `modem.begin()` sends
+   `AT+SOFTRESETWIFI`, which tears down WiFi. D-Sentry owns `Serial2`'s raw byte stream.
+7. Units: angles in degrees (float) inside modules, centidegrees (`DS_ANGLE_SCALE`) on the wire;
+   time `uint32_t` ms (`millis`) for logic, µs (`micros`) for sampling and scheduling; wrap-safe
+   comparisons (`(uint32_t)(now - then) >= period`).
+
+## 3. Hardware facts the code relies on (research, file:line evidence in the scratch reports)
+
+- Core `arduino:renesas_uno` 1.6.0. ICLK 48 MHz, GPT clock (PCLKD) 48 MHz, AGT 24 MHz.
+- `Serial` = SCI9 on P109/P110 to the ESP32 (USB passthrough), **no FIFO**: every byte written
+  while the transmitter is busy blocks ~86.8 µs. `Serial2` = SCI1 to the ESP32 AT server, 16-byte
+  FIFO. RX ring buffers are 512 B and drop silently when full. `UART::write` busy-waits.
+- millis()/micros(): AGT0, priority 8. PWM pins reserve GPT channels at boot: D3/D2 GPT1, D5 GPT0,
+  D6 GPT3, D9 GPT7, D10 GPT2 (ENA PWM, `analogWrite`), D11/D12 GPT6 (D12 = GPT6 B).
+- **Steppers:** GPT0 = pan, GPT1 = tilt (both 32-bit, 48 MHz /1), claimed with
+  `FspTimer::force_use_of_pwm_reserved_timer()` and explicit channels in `setup()` before anything
+  else allocates a timer. Priority `STEP_TIMER_IRQ_PRIORITY` (4) via `setup_overflow_irq()` before
+  `open()`. Speed changes use the buffered `set_period(counts)` only (takes effect at the next
+  overflow, glitch-free); never `set_frequency()`/`set_period_us()` at run time. To stop an axis:
+  `stop()`; to restart: `set_period()` then `start()`. Never `analogWrite` D2, D3, D5.
+- **ISR per step** (not per edge): STEP high, busy-wait `STEP_PULSE_US` with the DWT cycle counter,
+  STEP low, count the step, then apply a pending DIR change (DIR settles a whole period before the
+  next rising edge). Pin writes are single 32-bit stores to `R_PORT1->PCNTR3` (set = mask,
+  clear = mask << 16). STEP/DIR pins: D2 P104, D3 P105, D5 P107, D6 P111 (all PORT1).
+- **Jitter measurement:** in each step ISR read `DWT->CYCCNT`; expected interval = the period
+  (GTPR) in force for the cycle that just ended; track max and mean |actual − expected| per axis.
+- **NeoPixel `show()`** masks all interrupts (PRIMASK) for ~241 µs (8 px). It is called only when
+  `hal::stepQuietUs() >= LED_SHOW_GUARD_US`, i.e. no step edge is due in that window; if no window
+  appears within `LED_SHOW_MAX_DEFER_MS` it is called anyway and counted (`ledForcedShows`).
+- **Trigger servo:** `PwmOut` on D12 (GPT6 B), 50 Hz, hardware PWM (immune to the NeoPixel mask).
+  `begin((uint32_t)period_us, (uint32_t)pulse_us, false)` (the casts are required),
+  `pulseWidth_us()`, `suspend()` parks the pin LOW (= detached), `resume()`. Angle → pulse:
+  `TRIGGER_SERVO_MIN_US + deg / SERVO_SPAN_DEG * (MAX_US − MIN_US)` (same as Servo.h).
+  Never `analogWrite` D11 (shares GPT6).
+- **Flywheel ENA:** `analogWrite(PIN_FLY_ENA, duty)` (GPT2 A, 490 Hz, 8-bit).
+- **analogRead:** 10-bit default, ~10 µs, not ISR-safe; the stall detector samples from `loop()`
+  on a `micros()` schedule.
+- **LCD:** LiquidCrystal_I2C 1.1.2 (installed, proven on this LCD by `CODE/src/DisplayTest.cpp`)
+  is used for `init()` and `backlight()` in `setup()` only (init blocks ~1 s: allowed in setup).
+  Run-time writes use our own batched writer: one `Wire` transaction per character carrying both
+  nibbles (`[hi|E|BL, hi|BL, lo|E|BL, lo|BL]`, PCF8574 mapping RS=P0 RW=P1 E=P2 BL=P3 D4-7=P4-7),
+  and one per cursor move, ≈0.5 ms each at 100 kHz. At most one transaction per `Lcd::update()`.
+  `Wire.setWireTimeout` is set after `init()` (init calls `Wire.begin()`, which resets the clock).
+  Probe `LCD_I2C_ADDR`; if absent, probe `LCD_I2C_ADDR_FALLBACK`; if both absent run without an
+  LCD and log an error (CODE/ lesson: these backpacks come as 0x27 or 0x3F).
+- **USB port behaviour (ESP32 bridge):** opening the port at 1200 or 2400 baud resets the RA4M1;
+  any other baud is passed through, so PC tools open it at exactly `DEBUG_SERIAL_BAUD`. If no PC
+  has the port open, the bridge drops RA4M1 output (never stalls the RA4M1). If the PC holds the
+  port open but stops reading, the bridge stops forwarding PC→RA4M1, so PC tools always read.
+- **Lessons from `CODE/`:** never start a stepper at speed (every move is acceleration-limited);
+  re-send all 8 LED colours on every refresh, even if unchanged (a corrupted pixel then self-heals);
+  `Vref` is set with the drivers enabled and still (StepperHoldTest).
+
+## 4. Links and protocol
+
+### 4.1 Packets (defined in `protocol/protocol_spec.py`, generated everywhere else)
+
+All little-endian, packed, framed `start | len | payload… | crc`. `len` = number of payload bytes
+(everything after `len`, excluding `crc`). CRC-8/SMBUS: poly 0x07, init 0x00, no reflection, no
+xor-out (check value over ASCII "123456789" = 0xF4); computed over `len` and the payload.
+Deframers accept a frame only when `len` equals that packet type's exact payload length and the
+CRC matches, so ASCII debug text on the same USB port can never be taken for a frame.
+
+**ControlPacket** `0xA5`, payload 10 (spec §5): `flags u8` (bit0 connected, bit1 source 0 BLE /
+1 WiFi, bit2 ESP32 pairing, bit3 keyboard driving), `rx i16`, `ry i16` (−512..511, **stick up is
+negative**, the Bluepad32/SDL convention; the RA4M1 applies `JOY_INVERT_Y`), `rt u16` (0..1023),
+`buttons u16` (bit0 A, 1 B, 2 X, 3 Y, 4 LB, 5 RB, 6 dpad-up, 7 dpad-down, 8 dpad-left,
+9 dpad-right, 10 start, 11 back; 12 LS click, 13 RS click, 14 Xbox, 15 Share exist for the
+dashboard's controller view: a ControlPacket may carry them, the RA4M1 never acts on them),
+`seq u8`.
+
+**StatusPacket** `0x5A`, payload 7: `wantMode u8` (0 BLE, 1 WiFi), `rumbleStrong u8`,
+`rumbleWeak u8`, `rumbleMs u16` (0 = stop), `state u8` (turret state enum), `rumbleSeq u8`
+(extension: increments on every new rumble command, so a heartbeat repeat is not a new shot).
+
+**TelemetryPacket** `0xD5` (start ≥ 0x80 so it is never ASCII), version `DS_TELEMETRY_VERSION`:
+`version u8, seq u8, uptimeMs u32, state u8, fault u8, fireMode u8 (0 semi 1 full),
+linkSource u8 (0 none 1 BLE 2 WiFi 3 USB), flags u16 (bit0 linkConnected, 1 flywheelOn,
+2 flywheelReady, 3 strokeActive, 4 triggerPulled, 5 homing, 6 calibrated, 7 powerToggleOn,
+8 modeToggleWifi, 9 stallEnabled, 10 emptyMagBlink, 11 driversEnabled, 12 espLegacyFirmware,
+13 lcdPresent, 14 espAlive), panCdeg i32, tiltCdeg i32, panVelCdegS i16, tiltVelCdegS i16,
+homePanCdeg i32, homeTiltCdeg i32, ammo u8, magCapacity u8, shotsTotal u16, flywheelDuty u8,
+servoDeg u8, stallSample u16, stallBaseline u16, stallPeak u16, loopHz u16, ctrlRxHz u16,
+crcErrors u16, seqGaps u16, stepJitterPermille u16, lastCtrlSeq u8 (echo for latency),
+espMode u8, ledR u8, ledG u8, ledB u8 (LED 0 as sent, after brightness), lcd char[32]`
+(row 0 then row 1, space padded), then (version 2, 2026-11-03) the controller block:
+`padState u8, padBattery u8, padLx i16, padLy i16, padRx i16, padRy i16, padLt u16, padRt u16,
+padButtons u16` — the active source's latest frame as the RA4M1 holds it (ControlPacket units,
+stick up negative, all 16 button bits). padState: BLE = the `AT+XBOXSTATE?` state byte 0..5
+(`xbox_r4_conn_state`); WiFi = the same byte (the ESP32 sends 0 or 3); USB = 0 when the packet
+says connected, else 3; 255 = no source. padBattery 0..100, 255 unknown. Left stick, left trigger
+and battery are real only for BLE (a ControlPacket has none). A frame that is not connected
+reports neutral sticks, triggers and buttons with its padState; no source: 255 and neutral. The
+frame is 110 bytes (payload 107); version 1 was 94 (payload 91) and ended after `lcd`. The PC
+deframer accepts the version 1 length when asked (`Deframer(accept_legacy=True)`, used by the
+relay and the bench console), so a relay shows an older RA4M1 build with its controller block
+"not reported"; the RA4M1's and the ESP32's checks accept the current layout only.
+Pan sign: positive = counter-clockwise seen from above
+(= stick right turns the turret clockwise → negative; `PAN_DIR_INVERT` fixes the hardware side).
+Tilt: 0 = calibrated bottom (+ backoff), positive = barrel up.
+
+**BeaconPacket** `0xD6`, payload: `ip u8[4], udpPort u16, bootId u8, mode u8`. The ESP32
+broadcasts it every `WIFI_BEACON_MS` on `WIFI_DISCOVERY_PORT` while in WiFi mode.
+
+Enums: TurretState OFF 0, BOOT 1, CALIBRATING 2, PAIRING 3, DISARMED 4, ARMED 5, FAULT 6.
+Fault NONE 0, CAL 1, STALL 2. RadioMode BLE 0, WIFI 1. EspMode (reported) BLE 0, WIFI 1,
+NONE 2, RESTARTING 3, UNKNOWN 255. PadState CONNECTED 0, WAITING_FIRST_REPORT 1, FOUND 2,
+SCANNING 3, OFF 4, BLOCKED_BY_HCI 5, NONE 255.
+
+### 4.2 RA4M1 ↔ ESP32: the AT link (Serial2, 115200)
+
+Existing, unchanged: `AT+XBOXSTATE?` → `+XBOXSTATE: 20|<20 bytes>\r\nOK\r\n` (format in
+`docs/protocol.md` of the repo root and `protocol/xbox_r4_protocol.h`), `AT+XBOXBEGIN`.
+Added by D-Sentry (all answer with their prompt; failures go in the payload):
+
+| Command | Reply | Meaning |
+|---|---|---|
+| `AT+DSCAPS?` | `+DSCAPS: <dsProto>,<capBits>` | Capability probe. Old fork / stock answer bare `ERROR` → legacy. capBits: 1 rumble, 2 wifi, 4 mode, 8 telemetry. |
+| `AT+DSS=<wantMode>,<rumbleSeq>,<strong>,<weak>,<rumbleMs>,<state>` | `+DSS: <espMode>,<bootId>,<wifiStatus>` | Status (spec StatusPacket as decimal args). The ESP32 starts the wanted radio (idempotent); if the other radio is running it replies `espMode=3` (restarting), stores the wanted mode in `RTC_NOINIT` memory and restarts ~50 ms later, then boots straight into it. A new `rumbleSeq` triggers rumble: BLE mode → the pad (client task, 0x2A4D output report); WiFi mode → a StatusPacket sent by UDP to the relay. wifiStatus: 0 off, 1 connecting, 2 station up, 3 own AP up, 4 relay heard in the last `LINK_TIMEOUT_MS`. bootId: random non-zero byte chosen at boot. |
+| `AT+DST=<hex>` | `+DST: <0|1>` | Telemetry: hex of one complete TelemetryPacket (start…crc). WiFi mode forwards the bytes by UDP to the relay (1 = sent). |
+
+In WiFi mode `AT+XBOXSTATE?` returns a 20-byte state built from the relay's latest valid
+ControlPacket (sticks/trigger scaled to the HID ranges, buttons and d-pad mapped, `seq` = packet
+seq, state 0 if `flags.connected` and fresher than `LINK_TIMEOUT_MS`, else 3 "scanning"), so the
+RA4M1 polls the same command in both modes. `AT+SOFTRESETWIFI` becomes a prompt+OK no-op while a
+D-Sentry radio mode is active.
+
+**RA4M1 client** (`AsyncAt`, start from the research prototype
+`scratchpad/research/ra4m1_link/async_at/AsyncAt.h`, proven against the real chAT server): one
+request outstanding; request bytes go through the paced link writer; every received byte is fed
+to the parser each `loop()`; timeout `AT_REPLY_TIMEOUT_MS` plus the request's own wire time.
+Sequence: ping `AT` every `LINK_ESP_PING_MS` until any final arrives → `AT+DSCAPS?` → D-Sentry
+firmware (`ds`) or legacy (0.6.99). Then each tick, by priority: `AT+DSS` when its content changed
+or `STATUS_HEARTBEAT_MS` passed (ds only) → `AT+XBOXSTATE?` every `1000/CONTROL_PACKET_HZ` ms →
+`AT+DST` every `1000/TELEMETRY_WIFI_HZ` ms when `espMode == WIFI` (ds only). Legacy: BT mode only;
+send `AT+XBOXBEGIN` whenever a state frame says OFF (rate-limited by `LINK_BEGIN_RETRY_MS`);
+WiFi mode impossible → the link never connects and an error is logged once. ESP32 silent for
+`LINK_TIMEOUT_MS` → back to pinging. A changed `bootId`, or OFF while BLE is wanted → re-send DSS.
+XBOXSTATE → ControlFrame: `rx = (joyRHori − 32768) >> 6`, `ry = (joyRVert − 32768) >> 6`
+(0 = up → negative), `rt = trigRT`, A/B/X/Y/LB/RB from byte 13, start = Menu (byte 14 bit 3),
+back = View (byte 14 bit 2), d-pad code → the four d-pad bits. connected = (state byte == 0).
+For the TelemetryPacket's controller block only: `lx`/`ly` the same way from joyLHori/joyLVert,
+`lt = trigLT`, LS/RS click and Xbox from byte 14 bits 5/6/4, Share from byte 15 bit 0,
+battery = byte 17, padState = byte 16. An `AT+DST` line is 229 bytes (7 + 2 × 110 + 2; 197
+with the version 1 packet): about 20 ms of wire time at 115200 baud, so 10 Hz of WiFi telemetry
+holds the AT link about 20 % of the time (17 % before). The chAT harness's pessimistic loop
+(20..2000 µs) measures 71.7 control frames/s beside it (76.0/s with 197-byte lines).
+
+### 4.3 RA4M1 ↔ PC over USB serial (`Serial`, `DEBUG_SERIAL_BAUD`)
+
+One port carries: PC→RA4M1 ControlPackets (binary, start 0xA5, accepted only when
+`DEBUG_ACCEPT_USB_CONTROL`) and shell command lines (ASCII, `\n`-terminated); RA4M1→PC debug text
+lines, StatusPackets (on change + every `STATUS_HEARTBEAT_MS`) and TelemetryPackets (every
+`1000/TELEMETRY_USB_HZ` ms). Output goes through a ring buffer (`DEBUG_TX_BUFFER_BYTES`) drained
+at most one byte per byte-time (`UART_BITS_PER_BYTE * US_PER_S / DEBUG_SERIAL_BAUD` µs) by
+`hal::service()`, so no write ever blocks; a message that does not fit is dropped whole and counted.
+**Source priority:** if a valid USB ControlPacket arrived within `LINK_TIMEOUT_MS`, USB is the
+active source (bench override); otherwise the radio. A change of active source while connected is
+treated as a link loss (→ PAIRING → DISARMED on reconnect).
+
+### 4.4 PC relay ↔ ESP32 (WiFi mode, UDP)
+
+Relay → `turret:WIFI_UDP_PORT`: ControlPackets at `CONTROL_PACKET_HZ` (always sent, with
+`connected=0` when no input source, so the ESP32 always knows where to reply). ESP32 → the source
+address of the last valid ControlPacket: StatusPackets (rumble) and TelemetryPackets (raw bytes as
+received in `AT+DST`). Discovery order: explicit `--udp HOST[:PORT]`; else the BeaconPacket on
+`WIFI_DISCOVERY_PORT`; else `WIFI_AP_IP` when the Mac's address is on the AP subnet. The AP uses
+`WiFi.softAPConfig(WIFI_AP_IP…)` explicitly.
+
+## 5. RA4M1 modules (firmware-ra4m1/dsentry/src)
+
+Each module: `begin(...)`, `update(now…)`, small API. Pure logic; I/O only through `hal.h`.
+
+- **hal.h / hal_arduino.cpp** — `hal::begin()` (setup only: claims GPT0/GPT1, pins, Wire+LCD init,
+  NeoPixel, PwmOut servo parked, UARTs), `hal::service(nowUs)` (drains paced TX queues; nothing
+  else), time, GPIO, `readAnalog`, `pwmWrite`, `servoEnable/servoWriteDeg`, `stepperEnable`,
+  `stepSetRate(axis, stepsPerSec)` (signed float; 0 stops), `stepPosition/stepSetPosition`,
+  `stepSetBounds(axis, enabled, min, max)` (the ISR never steps past a bound; it counts the
+  refusals), `stepQuietUs()`, `stepTakeStats()` (jitter max/mean permille, steps, refusals; resets),
+  `ledsSetPixel/ledsShow`, `lcdPresent/lcdAddress/lcdBacklight/lcdWriteAt(col,row,char)` (one
+  transaction; the HAL remembers the cursor and only sends a cursor command when needed),
+  `usbRead/usbWrite/usbTxFree/usbTxDropped`, `linkRead/linkWrite/linkTxIdle`,
+  `storeLoad/storeSave` (the settings store: `SETTINGS_STORE_MAX_BYTES` at `SETTINGS_STORE_ADDR` of
+  the data flash through the core's EEPROM library; `storeSave` blocks, see rule 2). The host fake
+  (`sim/hal_host.cpp` + `sim/hal_host.h`) implements the same API with virtual time, a stepper
+  physics model (integrates rates, honours bounds, tilt has a physical bottom stop where steps are
+  lost), captured outputs, injectable inputs (toggles, A2 voltage), and byte pipes for USB/link.
+- **AsyncAt** — byte-fed reply parser (section 4.2).
+- **ControlLink** — owns the USB deframer + shell line splitter, the AT client and scheduling,
+  source priority, link timeout, stats (packet rate, CRC errors, seq gaps, poll timeouts). Output:
+  `ControlFrame {bool valid, connected, espPairing, keyboard; uint8 source; int16 rx, ry; uint16 rt,
+  buttons; uint8 seq; uint32 rxMs; int16 lx, ly; uint16 lt; uint8 battery, padState}` (the last
+  five feed only the TelemetryPacket's controller block) and `LinkStatus {espAlive, espLegacy, espMode, bootId,
+  wifiStatus, sourceChanged…}`. Input: `setWantMode()`, `requestRumble(strong, weak, ms)`,
+  `setTurretState()`, `sendTelemetry(bytes,len)`; shell lines are handed to Debug.
+- **Inputs** — toggles (debounced `TOGGLE_DEBOUNCE_MS`, `TOGGLE_ACTIVE_LOW`,
+  `TOGGLE_MODE_WIFI_WHEN_CLOSED`), stick shaping (normalise by `JOY_AXIS_RANGE`, clamp, deadzone
+  rescaled `(|x|−dz)/(1−dz)`, expo `(1−e)s + e s³`, sign; Y inverted by `JOY_INVERT_Y`), trigger
+  hysteresis (pulled above `TRIGGER_PRESS_THRESHOLD`, released below `TRIGGER_RELEASE_THRESHOLD`
+  of `TRIGGER_AXIS_RANGE`), button rising edges with a `BUTTON_DEBOUNCE_MS` lockout after each
+  accepted edge (immediate response, chatter ignored), `stickActive` (either axis outside the
+  deadzone), LB level. Edges are only generated from a connected frame; a link drop clears held state.
+- **Motion** — owns steps↔degrees (`PAN_STEPS_PER_DEG`, `TILT_STEPS_PER_DEG`, `*_DIR_INVERT`),
+  modes per axis: VELOCITY (stick), POSITION (go-home, shell `pan 30`), CALIBRATE, BACKOFF, STOP.
+  Runs its planner at `CONTROL_LOOP_HZ`: target velocity → speed cap from limits
+  `v ≤ sqrt(2·a_brake·d)` with `a_brake = min(accel, vmax²/(2·SOFT_LIMIT_SLOWDOWN_DEG))` (so
+  braking always starts at least `SOFT_LIMIT_SLOWDOWN_DEG` before a limit and never needs more
+  than the accel limit) → accel limiter (`*_ACCEL_DEG_PER_S2`) → `hal::stepSetRate`. Hard bounds in
+  the ISR: tilt `0..TILT_RANGE_DEG` after calibration; pan `PAN_MIN_DEG..PAN_MAX_DEG` only if
+  `PAN_LIMITS_ENABLED`. Position moves: same sqrt braking toward the target, capped at
+  `HOME_SPEED_DEG_PER_S` (trapezoid). Calibration (§3.5 spec): `CAL_RAM` drives tilt down at
+  `TILT_CAL_SPEED_DEG_PER_S` for `TILT_CAL_MAX_TRAVEL_DEG` with tilt bounds off, settles
+  `TILT_CAL_SETTLE_MS`, zeroes, moves up `TILT_CAL_BACKOFF_DEG`, zeroes, enables bounds;
+  `CAL_STALL_SENSE` stops on the stall event and faults after `TILT_CAL_TIMEOUT_MS`. Home is RAM
+  only, defaults (0,0). Exposes positions/velocities in degrees, `isMoving()`, `movingAxes()`.
+  Drivers: `STEPPER_HOLD_WHEN_IDLE` / `STEPPER_IDLE_DISABLE_MS`.
+- **StallDetector** — samples `PIN_STALL_SENSE` at `STALL_SAMPLE_HZ` from `loop()` (at most one
+  catch-up sample per call), EMA baseline (`STALL_BASELINE_ALPHA`) frozen while no axis moves,
+  ignores the first `STALL_IGNORE_AFTER_START_MS` of each move, stall when
+  `|sample − baseline| > STALL_DELTA_COUNTS` for `STALL_CONFIRM_SAMPLES` in a row; reports the
+  peak delta; live reading/baseline for the debug log at level 3 (decimated to `STALL_LOG_HZ`).
+  Active only when `STALL_DETECT_ENABLED` (or forced on during `CAL_STALL_SENSE` calibration).
+- **Flywheel** — ramp 0 → `FLYWHEEL_DUTY_255` over `FLYWHEEL_RAMP_MS`, IN1/IN2 per
+  `FLYWHEEL_FORWARD_IN1_HIGH`, stop coast/brake per `FLYWHEEL_BRAKE_ON_STOP`, `onSince`, `ready()`
+  (on ≥ `FLYWHEEL_SPINUP_MS`), immediate `cut()`.
+- **Trigger** — stroke state machine (IDLE → SWEEP_OUT: the commanded angle glides to
+  `TRIGGER_FIRE_ANGLE` at `TRIGGER_SWEEP_DEG_PER_S` → HOLD_FIRE for `TRIGGER_FORWARD_MS` →
+  SWEEP_BACK to `TRIGGER_REST_ANGLE` → HOLD_REST for `TRIGGER_RETURN_MS` → ammo−1, floor 0; rate 0
+  = jump), semi/full logic, semi cooldown (`TRIGGER_COOLDOWN_MS`), `abort()` (rest now, no
+  sweep, no decrement), ammo/magazine, shot counter, rumble request per stroke (`RUMBLE_*`; full
+  auto with `RUMBLE_FULL_AUTO_CONTINUOUS` renews it each stroke), the per-shot LED hold
+  (`LED_FIRE_FLASH_MIN_MS`), `fireReady()` (a fresh pull would start a stroke now: `gate()` of the
+  current input with the trigger pulled is OPEN, so every gate counts, the semi cooldown
+  included, and the LED hold is over).
+- **Leds** — renders a `DisplayModel` with priority FAULT blink → SERVO ADJUST cyan → EMPTY_MAG
+  purple double flash (over the state colour) → state colour (ARMED: `LED_COLOR_ARMED_READY` red
+  when `fireReady`, else `LED_COLOR_ARMED_WAIT` yellow, so yellow through every stroke's sweeps
+  and holds and through the semi cooldown); pulses are sinusoidal over `LED_PULSE_PERIOD_MS` with
+  floor `LED_PULSE_MIN_FRACTION`; PAIRING crossfades A↔B; frame every `1000/LED_REFRESH_HZ` ms,
+  always re-sent; shows only in a step-quiet window (section 3). One brightness-clamp function.
+- **Lcd** — renders `DisplayModel` into two 16-char rows (spec §3.9), diffs against what the
+  display holds, writes at most one character per `update()`, recomputes rows at most every
+  `LCD_REFRESH_MS`, never clears per frame. Row layout: left text, right text right-justified,
+  at least one space between; if they do not fit, the right text is cut from its end (and a boot
+  warning names the offending strings). Pairing dots `""`, `"."`, `". ."`, `". . ."` every
+  `LCD_PAIRING_DOT_MS`, appended after one space. Backlight off in OFF if configured.
+- **TurretState** — the state machine (spec §3.1) and all permission rules (section 6).
+  Produces the `DisplayModel` and drives every other module.
+- **ServoStore** — SERVO ADJUST's record in the data flash: magic `SERVO_STORE_MAGIC` (2 bytes),
+  `SERVO_STORE_VERSION`, REST, FIRE (whole degrees), `ds_crc8` of the five; `load()` says OK,
+  BLANK (all 0xFF) or INVALID; `save()` writes through `hal::storeSave`. TurretState is its only user.
+- **Telemetry** — builds TelemetryPackets from const references to the modules; the controller
+  block comes from `ControlLink::frame()` and the active source (`Telemetry::padBlock`).
+- **Debug** — log levels, stats line every `DEBUG_STATS_INTERVAL_MS` (loop rate, link rate, poll
+  timeouts, CRC errors, seq gaps, packet loss %, step jitter max/mean, LED forced shows, USB TX
+  drops), the bench shell: `help`, `status`, `arm`, `disarm`, `fire`, `fly on|off`, `mode semi|full`,
+  `mag`, `pan <deg>`, `tilt <deg>`, `home`, `sethome`, `stop`, `cal`, `stall?`, `log <0-3>`,
+  `stats`, and SERVO ADJUST's `servo adjust` (alias `servo teach`) `|<deg>|rest|fire|reset|stroke|off`.
+  Shell actions go through TurretState and obey the same permissions as the controller.
+
+## 6. Behaviour decisions where the spec is silent
+
+- **BOOT → CALIBRATING** on the next tick after `begin()` (BOOT exists so the LEDs/LCD show it);
+  CALIBRATING shows the BOOT white pulse and `Calibrating`.
+- **PAIRING row 1**: from boot, `<mode> Pairing<dots>` indefinitely; after a link loss,
+  `Pairing<dots>` for `LINK_RECONNECT_GRACE_MS`, then `No Link` until connected.
+- **A pull counts only if it started while ARMED.** Arming with the trigger held (possible only when
+  `ARM_REQUIRES_TRIGGER_RELEASED` is false) never fires until the trigger is released and pulled.
+- **Semi:** a pull that started while ARMED but before the flywheel was ready fires once when it
+  becomes ready, if still held. **Full:** strokes back-to-back while held and permitted.
+- **Stroke, ammo and semi cooldown** (owner, 2026-11-03): the servo glides REST → FIRE and back at
+  `TRIGGER_SWEEP_DEG_PER_S` with a `TRIGGER_FORWARD_MS` / `TRIGGER_RETURN_MS` hold at each end (a
+  hobby servo has no position feedback; the glide is slower than the servo, so "complete" is
+  true); ammo − 1 only when the whole stroke has completed, never on an abort. In semi auto no
+  stroke starts until `TRIGGER_COOLDOWN_MS` after the last one completed: a counting pull still
+  held then fires, one let go before never does; the shell's `fire` is refused meanwhile. Full
+  auto has no cooldown.
+- **Link loss / disarm / power off / fault mid-stroke:** servo to rest now, stroke aborted, no
+  decrement; flywheels cut per the spec flags; motion stopped (decelerated at the accel limit, never
+  past a limit).
+- **Reconnection always lands in DISARMED** (spec). `FAILSAFE_DISARM_ON_LOSS = false` therefore
+  cannot restore ARMED; it is reported at boot as "ignored" and listed for the owner.
+- **Mode toggle** (A1) changes → ControlLink wantMode, link treated as lost, state → PAIRING
+  (from PAIRING/DISARMED/ARMED; during CALIBRATING the switch happens but the state continues).
+- **Stall fault:** stop both axes, back off `STALL_BACKOFF_DEG` on each axis that was moving
+  (opposite to its motion), FAULT for `STALL_FAULT_HOLD_MS` from the stall, then the previous arm
+  state (or PAIRING if the link dropped meanwhile). Stall events during `CAL_RAM` calibration are
+  expected and ignored.
+- **LEDs (owner, 2026-11-03).** ARMED is red when a pull would fire right now and yellow while the
+  next shot is not available (`Trigger::fireReady()`: every gate, the stroke with its sweeps and
+  holds and its `LED_FIRE_FLASH_MIN_MS` hold, the flywheel spin-up, the semi
+  `TRIGGER_COOLDOWN_MS`); semi / full is shown on the LCD only.
+  TurretState publishes the model before `Trigger::update()`, and Trigger starts the next
+  full-auto stroke in the update that completes the last, so a held trigger stays yellow with no
+  red frame between strokes.
+- **Empty magazine (owner, 2026-11-03).** `FIRE_LOCKOUT_WHEN_EMPTY` is false: the turret keeps
+  firing at ammo 0 and the count stays 0. Whenever ammo is 0 in DISARMED or ARMED the LEDs show a
+  repeating purple double flash (`LED_EMPTY_FLASH_ON_MS` flash, `LED_EMPTY_FLASH_GAP_MS` of the
+  state colour, a second flash, the state colour for the rest of `LED_EMPTY_FLASH_PERIOD_MS`,
+  phase 0 when ammo reached 0) until X; SERVO ADJUST's cyan and FAULT win over it.
+- **SERVO ADJUST** (TurretState.h; SERVO TEACH until 2026-11-03) is entered with **Menu**
+  (`DS_BTN_START`), only from DISARMED, and left with Menu again; Y is unused (no action, never
+  refused). Inside: d-pad ±`SERVO_ADJUST_STEP_SMALL_DEG`, RB / LB ±`SERVO_ADJUST_STEP_LARGE_DEG`,
+  A records REST, B FIRE, X one test stroke (the slow sweep, no dart counted), **View**
+  (`DS_BTN_BACK`) puts `config.h`'s REST and FIRE back in force; flywheels cut, no arming or firing;
+  LCD `SERVO ADJUST <angle>` / `R:<rest> F:<fire>` (the angles in force), LEDs cyan.
+- **SERVO ADJUST saves (owner, 2026-11-03, overriding the spec's "settings RAM only").** Boot loads
+  ServoStore's record: valid, its REST / FIRE replace `config.h`'s for the run; blank or invalid,
+  `config.h`'s (the boot log says which). Leaving with Menu (or the shell's `servo adjust` /
+  `servo off`) saves the angles in force when they differ from the boot angles, and they become the
+  boot angles, so the power toggle's reboot keeps them; unchanged, nothing is written. Menu is
+  refused (`REFUSED_MOVING`) while an axis moves, because the save blocks `loop()` (rule 2) and with
+  it the motion planner; a running test stroke is aborted before the save. Leaving any other way
+  (link loss, the mode toggle, power off, a fault, a state change) does not save: changed angles
+  stay in force for the run only, and power off returns to the boot angles. A save whose read-back
+  fails is logged and counted; the angles then stay for the run only. Typical blocking time about
+  50 ms (RA4M1 datasheet table 2.73 at the 24 MHz flash clock: 1 KB erase plus 1024 one-byte
+  programs); the datasheet maximum, 0.6-0.75 s, would exceed `LINK_TIMEOUT_MS` and cost a link loss
+  (into PAIRING, the angles already saved).
+- Rumble per shot is requested when the stroke starts.
+
+## 7. PC side
+
+`relay-pc/dsentry_relay.py`: reads the pad with `pygame._sdl2.controller` on the main thread
+(`SDL_VIDEODRIVER=dummy`, `SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS=1`, pumped ≥ 200 Hz), sender thread
+at `CONTROL_PACKET_HZ` (deadline-scheduled), transports `--udp HOST[:PORT]|auto` and
+`--serial PORT|auto` (auto = the one port with USB ID 2341:1002; `write_timeout` 0.05 s; reopen on
+any error), `--monitor` (serial: read telemetry only, send nothing — for BT mode), `--sim` (spawn
+`sim/build/dsentry_sim` and talk UDP to it), `--no-pad`, `--http-port`, `--host`, `--no-browser`.
+Prints packet rate and the RA4M1's CRC-error count once a second. Rumble from StatusPackets →
+`Controller.rumble(strong/255, weak/255, ms)` (only on a new `rumbleSeq`; 0 ms → `stop_rumble`).
+SDL ranges: sticks −32768..32767 → `>> 6`; triggers 0..32767 → `>> 5`; SDL Y is already
+"up negative". Button map spec bits 0..11 ← SDL buttons [A, B, X, Y, LEFTSHOULDER, RIGHTSHOULDER,
+DPAD_UP, DPAD_DOWN, DPAD_LEFT, DPAD_RIGHT, START, BACK]; bits 12..15 ← [LEFTSTICK, RIGHTSTICK,
+GUIDE, MISC1 (id 15, no pygame constant)], sent too. The relay also reads the left stick, the left
+trigger and SDL's battery level (a level, not a percent) for the dashboard; they are not sent.
+
+Dashboard (`relay-pc/web/index.html`, served by the relay's stdlib `ThreadingHTTPServer`, SSE
+`/events` for telemetry at ≤ 30 frames/s, POST for keyboard) — reuse the patterns of
+`tools/dashboard.py` (Hub with Condition + version counter, SSE keepalive, page watchdog + boot
+token). Shows: turret state, fault, arm/fire mode, ammo, flywheel (duty, spin-up/ready), trigger,
+link (source, rate, CRC errors, seq gaps, round-trip latency from `lastCtrlSeq`), loop rate, step
+jitter, stall sample/baseline/peak, LCD mirror, LED ring mirror, pan/tilt with home markers and
+limits, the 3D turret (hand-rolled canvas renderer, drag to orbit), the input being sent, a
+CONTROLLER panel, and an event log derived from telemetry changes. The CONTROLLER panel shows one
+source's full pad state (two sticks with the `JOY_DEADZONE` ring, LT/RT bars with the
+`TRIGGER_PRESS_THRESHOLD` / `TRIGGER_RELEASE_THRESHOLD` marks on RT, the d-pad, A B X Y LB RB View
+Menu Xbox LS RS Share, battery, connection state) and names it: while the relay drives with its
+own pad, the keyboard or the demo script, that input as the relay holds it ("relay pad",
+"keyboard", "demo script"); otherwise (`--monitor`, or no relay input) the TelemetryPacket's
+controller block ("pad on the turret (BLE)" in BT mode), greyed when telemetry is stale, and "not
+reported by this firmware" for a version 1 packet. Keyboard control: off at every start; a click enables
+it for that tab (per-boot token in an `X-DSentry-Token` header, Host-header check, loopback
+clients only); state POSTed on change and at 30 Hz; server deadman `LINK_TIMEOUT_MS` → neutral,
+session revoked after `KEYBOARD_REVOKE_MS`; blur/hidden/pagehide/Esc/Cmd → neutral; toggle-type
+keys are sent as press counters and stretched to `KEYBOARD_PRESS_MS` presses; a connected pad
+locks the keyboard out; any source change sends `connected=0` for longer than `LINK_TIMEOUT_MS`.
+Keys: W/S/↑/↓ tilt, A/D/←/→ pan (Shift = full deflection, else `KEYBOARD_DEFLECTION`), Space RT,
+F LB, Enter A (arm), M B (semi/full), R X (magazine), H d-pad left (set home), G d-pad down (go
+home), Esc panic. "KEYBOARD LIVE" banner while enabled.
+
+`tools/bench_console.py`: line-based console on the USB port: keeps sending ControlPackets at
+`CONTROL_PACKET_HZ` (neutral by default), commands to tap/hold buttons, set sticks/trigger,
+connect/disconnect, `!<line>` sends a shell line, prints the RA4M1's text and decoded
+status/telemetry summaries.
+
+## 8. Testing without a board
+
+1. Host unit tests per module (`tests/unit`, tiny assert kit, virtual time through the host HAL).
+2. `AsyncAt`/ControlLink against the real chAT server sources (`../firmware/UNOR4USBBridge/parser.cpp`,
+   `server.cpp`) with fake handlers, as `tests/test_chat_e2e.cpp` does, including fault injection.
+3. ESP32 additions: compile the fork (`../firmware/compile.sh`, never `export.sh` in place) and a host
+   test of the new AT handlers' wire format against the real chAT.
+4. `dsentry_sim`: the real RA4M1 logic with the host HAL, real time, UDP on `WIFI_UDP_PORT` (acts as
+   the ESP32 in WiFi mode: ControlPackets in, Status/Telemetry out) and a pty for USB serial.
+   Acceptance tests (`tests/acceptance`, Python unittest) drive it through the relay's own
+   transport code and check spec §11 items 1-17 that are observable without hardware.
+5. Arduino builds: `arduino-cli compile --fqbn arduino:renesas_uno:unor4wifi` of the sketch and
+   `i2c_scan`, and `pio run` in `firmware-ra4m1`. `tools/check_literals.py` clean.
+6. Relay/dashboard: Python unittest (codec, deframer, SDL scaling, keyboard merge/deadman/token,
+   transports over pty and loopback UDP, subprocess end to end against `dsentry_sim`), and a
+   Playwright smoke test of the page.

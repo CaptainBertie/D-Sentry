@@ -1,0 +1,276 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 1040" width="1500" height="1040" font-family="Helvetica, Arial, sans-serif">
+  <rect width="1500" height="1040" fill="#ffffff"/>
+  <text x="40" y="48" font-size="26" font-weight="700" fill="#111">Nerf Turret — Wiring Diagram</text>
+  <text x="40" y="70" font-size="13" fill="#555">UNO R4 WiFi + CNC Shield V3 (A4988) · 2× NEMA17 · IRLZ44N flywheel switch · trigger servo · Freenove 8 RGB LED · 6S LiPo + 9V</text>
+
+  <g fill="none" stroke-width="2.5" stroke-linejoin="round">
+    <!-- ===== Stepper cables ===== -->
+    <!-- X header (pan) -> pan motor -->
+    <polyline points="372,200 372,90 1130,90 1130,200" stroke="#1f77b4"/>
+    <polyline points="386,200 386,98 1110,98 1110,200" stroke="#d62728"/>
+    <polyline points="400,200 400,106 1090,106 1090,200" stroke="#2ca02c"/>
+    <polyline points="414,200 414,114 1070,114 1070,200" stroke="#7f7f7f"/>
+    <!-- Y header (tilt) -> tilt motor -->
+    <polyline points="502,200 502,120 910,120 910,200" stroke="#1f77b4"/>
+    <polyline points="516,200 516,128 890,128 890,200" stroke="#d62728"/>
+    <polyline points="530,200 530,136 870,136 870,200" stroke="#2ca02c"/>
+    <polyline points="544,200 544,144 850,144 850,200" stroke="#7f7f7f"/>
+
+    <!-- ===== 9V battery -> barrel jack ===== -->
+    <polyline points="180,200 318,200" stroke="#c2185b"/>
+    <polyline points="180,230 318,230" stroke="#111"/>
+
+    <!-- ===== LiPo -> shield power terminal ===== -->
+    <polyline points="220,590 280,590 280,440 318,440" stroke="#d62728" stroke-width="4"/>
+    <polyline points="220,630 300,630 300,470 318,470" stroke="#111" stroke-width="4"/>
+
+    <!-- ===== LiPo -> flywheel branch ===== -->
+    <polyline points="130,660 130,1010 1340,1010 1340,680" stroke="#d62728" stroke-width="4"/>
+    <polyline points="180,660 180,990 1000,990" stroke="#111" stroke-width="4"/>
+
+    <!-- ===== Servo ===== -->
+    <polyline points="748,400 900,400" stroke="#9467bd"/>
+    <polyline points="748,425 900,425" stroke="#ff7f0e"/>
+    <polyline points="748,450 900,450" stroke="#111"/>
+    <!-- 470uF cap -->
+    <polyline points="862,425 862,433" stroke="#444" stroke-width="2"/>
+    <polyline points="852,433 872,433" stroke="#444" stroke-width="3"/>
+    <polyline points="852,441 872,441" stroke="#444" stroke-width="3"/>
+    <polyline points="862,441 862,450" stroke="#444" stroke-width="2"/>
+
+    <!-- ===== LED module ===== -->
+    <polyline points="748,510 900,510" stroke="#17becf"/>
+    <polyline points="748,535 900,535" stroke="#ff7f0e"/>
+    <polyline points="748,560 900,560" stroke="#111"/>
+
+    <!-- ===== MOSFET gate drive ===== -->
+    <polyline points="748,620 800,620 800,840 830,840" stroke="#8c564b"/>
+    <polyline points="870,840 960,840" stroke="#8c564b"/>
+    <polyline points="910,840 910,900" stroke="#8c564b"/>
+    <polyline points="910,940 910,990" stroke="#111"/>
+
+    <!-- MOSFET drain/source -->
+    <polyline points="972,817 1000,817 1000,770 1290,770" stroke="#555"/>
+    <polyline points="972,862 1000,862 1000,990" stroke="#111" stroke-width="4"/>
+    <polyline points="1000,840 1000,862" stroke="#111" stroke-width="2"/>
+
+    <!-- Motor + rail -->
+    <polyline points="1100,680 1340,680" stroke="#d62728" stroke-width="4"/>
+    <polyline points="1100,680 1100,703" stroke="#d62728"/>
+    <polyline points="1220,680 1220,703" stroke="#d62728"/>
+    <polyline points="1100,747 1100,770" stroke="#555"/>
+    <polyline points="1220,747 1220,770" stroke="#555"/>
+    <!-- Diode leads -->
+    <polyline points="1290,680 1290,716" stroke="#d62728"/>
+    <polyline points="1290,740 1290,770" stroke="#555"/>
+  </g>
+
+  <!-- junction dots -->
+  <g fill="#111">
+    <circle cx="910" cy="840" r="4" fill="#8c564b"/>
+    <circle cx="1220" cy="680" r="4" fill="#d62728"/>
+    <circle cx="1290" cy="680" r="4" fill="#d62728"/>
+    <circle cx="1220" cy="770" r="4" fill="#555"/>
+    <circle cx="1100" cy="770" r="4" fill="#555"/>
+    <circle cx="862" cy="425" r="3.5" fill="#ff7f0e"/>
+    <circle cx="862" cy="450" r="3.5" fill="#111"/>
+  </g>
+
+  <!-- ===== 9V battery ===== -->
+  <rect x="50" y="175" width="130" height="80" rx="8" fill="#fde7ef" stroke="#c2185b" stroke-width="2"/>
+  <text x="115" y="210" font-size="16" font-weight="700" text-anchor="middle" fill="#111">9V battery</text>
+  <text x="115" y="230" font-size="11" text-anchor="middle" fill="#555">logic power</text>
+  <text x="172" y="196" font-size="13" font-weight="700" fill="#c2185b">+</text>
+  <text x="172" y="246" font-size="13" font-weight="700" fill="#111">−</text>
+  <text x="200" y="192" font-size="11" fill="#555">→ barrel jack</text>
+
+  <!-- ===== 6S LiPo ===== -->
+  <rect x="40" y="560" width="180" height="100" rx="8" fill="#fdecea" stroke="#d62728" stroke-width="2"/>
+  <text x="130" y="597" font-size="17" font-weight="700" text-anchor="middle" fill="#111">6S LiPo</text>
+  <text x="130" y="617" font-size="11" text-anchor="middle" fill="#555">22.2 V nom · 25.2 V full</text>
+  <text x="130" y="635" font-size="11" text-anchor="middle" fill="#555">XT60 Y-splitter</text>
+  <text x="226" y="585" font-size="13" font-weight="700" fill="#d62728">+</text>
+  <text x="226" y="648" font-size="13" font-weight="700" fill="#111">−</text>
+  <text x="138" y="680" font-size="11" fill="#d62728">+</text>
+  <text x="188" y="680" font-size="11" fill="#111">−</text>
+  <text x="142" y="720" font-size="11" fill="#555" transform="rotate(90 142 720)">to flywheels</text>
+
+  <!-- ===== Arduino + shield ===== -->
+  <rect x="330" y="180" width="410" height="480" rx="10" fill="#e6f4f1" stroke="#00897b" stroke-width="2"/>
+  <rect x="342" y="192" width="386" height="456" rx="8" fill="#e8eefb" stroke="#3f51b5" stroke-width="1.5"/>
+  <text x="535" y="548" font-size="16" font-weight="700" text-anchor="middle" fill="#111">CNC Shield V3</text>
+  <text x="535" y="568" font-size="12" text-anchor="middle" fill="#00897b">stacked on Arduino UNO R4 WiFi</text>
+  <text x="535" y="588" font-size="11" text-anchor="middle" fill="#555">Xbox pad → Bluetooth (ESP32-S3 on R4)</text>
+
+  <!-- motor headers -->
+  <rect x="364" y="200" width="58" height="12" fill="#222"/>
+  <rect x="494" y="200" width="58" height="12" fill="#222"/>
+  <rect x="624" y="200" width="58" height="12" fill="#bbb"/>
+  <g font-size="8" text-anchor="middle" fill="#333">
+    <text x="372" y="223">2B</text><text x="386" y="223">2A</text><text x="400" y="223">1A</text><text x="414" y="223">1B</text>
+    <text x="502" y="223">2B</text><text x="516" y="223">2A</text><text x="530" y="223">1A</text><text x="544" y="223">1B</text>
+    <text x="653" y="223">unused</text>
+  </g>
+
+  <!-- driver sockets -->
+  <rect x="350" y="232" width="90" height="105" rx="4" fill="#c62828" stroke="#7f0000"/>
+  <rect x="372" y="262" width="46" height="46" fill="#111"/>
+  <text x="395" y="252" font-size="12" font-weight="700" text-anchor="middle" fill="#fff">X · A4988</text>
+  <text x="395" y="327" font-size="10" text-anchor="middle" fill="#fff">PAN</text>
+  <rect x="480" y="232" width="90" height="105" rx="4" fill="#c62828" stroke="#7f0000"/>
+  <rect x="502" y="262" width="46" height="46" fill="#111"/>
+  <text x="525" y="252" font-size="12" font-weight="700" text-anchor="middle" fill="#fff">Y · A4988</text>
+  <text x="525" y="327" font-size="10" text-anchor="middle" fill="#fff">TILT</text>
+  <rect x="610" y="232" width="90" height="105" rx="4" fill="none" stroke="#999" stroke-dasharray="5 4"/>
+  <text x="655" y="290" font-size="12" text-anchor="middle" fill="#999">Z · empty</text>
+
+  <g font-size="11" fill="#333">
+    <text x="356" y="360">Fixed by shield: X STEP D2 · DIR D5 | Y STEP D3 · DIR D6 | EN D8</text>
+    <text x="356" y="378">Microstep jumpers under X &amp; Y (all 3 on = 1/16 step)</text>
+  </g>
+
+  <!-- power terminal -->
+  <rect x="318" y="425" width="26" height="60" fill="#2e7d32" stroke="#1b5e20"/>
+  <circle cx="331" cy="440" r="6" fill="#ccc" stroke="#555"/>
+  <circle cx="331" cy="470" r="6" fill="#ccc" stroke="#555"/>
+  <text x="352" y="444" font-size="11" fill="#d62728" font-weight="700">+ motor power in</text>
+  <text x="352" y="474" font-size="11" fill="#111" font-weight="700">− (tied to Arduino GND)</text>
+
+  <!-- barrel jack -->
+  <rect x="318" y="190" width="24" height="50" rx="3" fill="#333"/>
+  <text x="354" y="246" font-size="9" fill="#555"> </text>
+
+  <!-- right-edge pin column -->
+  <g font-size="11" text-anchor="end" fill="#111">
+    <text x="726" y="404">D11 (Z± endstop pin)</text>
+    <text x="726" y="429">5V</text>
+    <text x="726" y="454">GND</text>
+    <text x="726" y="514">A3 (CoolEn pin)</text>
+    <text x="726" y="539">5V</text>
+    <text x="726" y="564">GND</text>
+    <text x="726" y="624">D10 (Y± endstop pin, PWM)</text>
+  </g>
+  <g fill="#222">
+    <rect x="732" y="394" width="14" height="12"/><rect x="732" y="419" width="14" height="12"/><rect x="732" y="444" width="14" height="12"/>
+    <rect x="732" y="504" width="14" height="12"/><rect x="732" y="529" width="14" height="12"/><rect x="732" y="554" width="14" height="12"/>
+    <rect x="732" y="614" width="14" height="12"/>
+  </g>
+
+  <!-- ===== Stepper motors ===== -->
+  <rect x="820" y="200" width="140" height="80" rx="6" fill="#eceff1" stroke="#455a64" stroke-width="2"/>
+  <text x="890" y="250" font-size="15" font-weight="700" text-anchor="middle" fill="#111">TILT</text>
+  <text x="890" y="268" font-size="11" text-anchor="middle" fill="#555">NEMA17</text>
+  <rect x="1040" y="200" width="140" height="80" rx="6" fill="#eceff1" stroke="#455a64" stroke-width="2"/>
+  <text x="1110" y="250" font-size="15" font-weight="700" text-anchor="middle" fill="#111">PAN</text>
+  <text x="1110" y="268" font-size="11" text-anchor="middle" fill="#555">NEMA17</text>
+  <g font-size="8" text-anchor="middle" fill="#333">
+    <text x="850" y="214">1B</text><text x="870" y="214">1A</text><text x="890" y="214">2A</text><text x="910" y="214">2B</text>
+    <text x="1070" y="214">1B</text><text x="1090" y="214">1A</text><text x="1110" y="214">2A</text><text x="1130" y="214">2B</text>
+  </g>
+  <text x="1200" y="225" font-size="11" fill="#555">1A–1B = coil A</text>
+  <text x="1200" y="241" font-size="11" fill="#555">2A–2B = coil B</text>
+  <text x="1200" y="257" font-size="11" fill="#555">(pair = low Ω on meter)</text>
+
+  <!-- ===== Servo ===== -->
+  <rect x="900" y="380" width="170" height="90" rx="8" fill="#f3e5f5" stroke="#9467bd" stroke-width="2"/>
+  <g font-size="10" fill="#333"><text x="908" y="404">SIG</text><text x="908" y="429">+5V</text><text x="908" y="454">GND</text></g>
+  <text x="1020" y="420" font-size="15" font-weight="700" text-anchor="middle" fill="#111">Trigger</text>
+  <text x="1020" y="438" font-size="15" font-weight="700" text-anchor="middle" fill="#111">servo</text>
+  <text x="868" y="420" font-size="9" fill="#444">470µF</text>
+
+  <!-- ===== LED module ===== -->
+  <rect x="900" y="490" width="170" height="90" rx="8" fill="#e0f7fa" stroke="#17becf" stroke-width="2"/>
+  <g font-size="10" fill="#333"><text x="908" y="514">S</text><text x="908" y="539">V</text><text x="908" y="564">G</text></g>
+  <text x="1025" y="525" font-size="14" font-weight="700" text-anchor="middle" fill="#111">Freenove</text>
+  <text x="1025" y="543" font-size="14" font-weight="700" text-anchor="middle" fill="#111">8 RGB LED</text>
+  <g>
+    <circle cx="955" cy="563" r="4" fill="#e53935"/><circle cx="969" cy="563" r="4" fill="#43a047"/><circle cx="983" cy="563" r="4" fill="#1e88e5"/><circle cx="997" cy="563" r="4" fill="#e53935"/>
+    <circle cx="1011" cy="563" r="4" fill="#43a047"/><circle cx="1025" cy="563" r="4" fill="#1e88e5"/><circle cx="1039" cy="563" r="4" fill="#e53935"/><circle cx="1053" cy="563" r="4" fill="#43a047"/>
+  </g>
+  <!-- 330R data resistor -->
+  <rect x="810" y="504" width="32" height="12" fill="#fff" stroke="#17becf" stroke-width="2"/>
+  <text x="826" y="498" font-size="9" text-anchor="middle" fill="#444">330Ω</text>
+
+  <!-- ===== MOSFET stage ===== -->
+  <rect x="830" y="834" width="40" height="12" fill="#fff" stroke="#8c564b" stroke-width="2"/>
+  <text x="850" y="828" font-size="10" text-anchor="middle" fill="#444">100Ω</text>
+  <rect x="904" y="900" width="12" height="40" fill="#fff" stroke="#8c564b" stroke-width="2"/>
+  <text x="922" y="925" font-size="10" fill="#444">10kΩ</text>
+  <text x="922" y="938" font-size="9" fill="#777">pull-down</text>
+  <!-- symbol -->
+  <line x1="960" y1="812" x2="960" y2="868" stroke="#111" stroke-width="3"/>
+  <line x1="970" y1="808" x2="970" y2="826" stroke="#111" stroke-width="3"/>
+  <line x1="970" y1="832" x2="970" y2="848" stroke="#111" stroke-width="3"/>
+  <line x1="970" y1="854" x2="970" y2="872" stroke="#111" stroke-width="3"/>
+  <line x1="970" y1="817" x2="972" y2="817" stroke="#111" stroke-width="2"/>
+  <line x1="1000" y1="840" x2="980" y2="840" stroke="#111" stroke-width="2"/>
+  <polygon points="972,840 982,834 982,846" fill="#111"/>
+  <text x="948" y="828" font-size="11" font-weight="700" fill="#111">G</text>
+  <text x="1006" y="808" font-size="11" font-weight="700" fill="#111">D</text>
+  <text x="1006" y="880" font-size="11" font-weight="700" fill="#111">S</text>
+  <text x="1012" y="846" font-size="13" font-weight="700" fill="#111">IRLZ44N</text>
+
+  <!-- flywheel motors -->
+  <circle cx="1100" cy="725" r="22" fill="#fff8e1" stroke="#555" stroke-width="2.5"/>
+  <text x="1100" y="731" font-size="16" font-weight="700" text-anchor="middle">M</text>
+  <circle cx="1220" cy="725" r="22" fill="#fff8e1" stroke="#555" stroke-width="2.5"/>
+  <text x="1220" y="731" font-size="16" font-weight="700" text-anchor="middle">M</text>
+  <text x="1100" y="668" font-size="11" text-anchor="middle" fill="#333">Flywheel 1</text>
+  <text x="1220" y="668" font-size="11" text-anchor="middle" fill="#333">Flywheel 2</text>
+  <text x="1160" y="655" font-size="10" text-anchor="middle" fill="#777">stock blaster motors (~7.4 V)</text>
+  <!-- diode -->
+  <polygon points="1278,740 1302,740 1290,718" fill="#111"/>
+  <line x1="1277" y1="716" x2="1303" y2="716" stroke="#111" stroke-width="3"/>
+  <text x="1030" y="792" font-size="10" fill="#333">Flyback: Schottky ≥5 A (e.g. SB560), bar toward +</text>
+  <text x="1350" y="700" font-size="10" fill="#d62728">LiPo +</text>
+
+  <!-- PWM note -->
+  <rect x="1090" y="840" width="395" height="120" rx="8" fill="#fff3e0" stroke="#ff7f0e"/>
+  <text x="1105" y="864" font-size="13" font-weight="700" fill="#111">⚠ Stock motors on 25.2 V — limit with PWM</text>
+  <text x="1105" y="886" font-size="12" fill="#333">V_avg = duty × V_batt → 0.29 × 25.2 V ≈ 7.4 V</text>
+  <text x="1105" y="906" font-size="12" fill="#333">Cap analogWrite(10, …) at ≈ 75 / 255</text>
+  <text x="1105" y="926" font-size="12" fill="#333">Ramp 0 → 75 over ~0.5 s (limits inrush)</text>
+  <text x="1105" y="946" font-size="12" fill="#333">Full-on (255) = 3.4× rated voltage → burnt motors</text>
+
+  <!-- Notes -->
+  <rect x="340" y="690" width="440" height="262" rx="8" fill="#fafafa" stroke="#bbb"/>
+  <text x="355" y="714" font-size="13" font-weight="700" fill="#111">Before powering up</text>
+  <g font-size="11.5" fill="#333">
+    <text x="355" y="738">• A4988 accepts 8–35 V → 6S (25.2 V full) is in range</text>
+    <text x="355" y="760">• Set each A4988 Vref first:  I_max = Vref ÷ (8 × R_sense)</text>
+    <text x="355" y="782">• Shield's input capacitor: check it's rated ≥ 35 V</text>
+    <text x="370" y="798" fill="#777">(some clones ship 25 V caps — below a full 6S)</text>
+    <text x="355" y="820">• Never plug/unplug a stepper while powered</text>
+    <text x="355" y="842">• LiPo − and Arduino GND join through the shield</text>
+    <text x="370" y="858" fill="#777">→ common ground; the MOSFET gate needs it</text>
+    <text x="355" y="880">• Servo + LEDs draw from the 9V via the R4's 5V rail</text>
+    <text x="370" y="896" fill="#777">→ keep LED brightness low; a servo stall can reset the board</text>
+    <text x="355" y="918">• Stepper wire colours vary by brand — confirm coil pairs</text>
+    <text x="355" y="940">• Servo/LED 5V+GND: shield's I2C/UART header pins</text>
+  </g>
+
+  <!-- Legend -->
+  <rect x="30" y="290" width="238" height="235" rx="8" fill="#fafafa" stroke="#bbb"/>
+  <text x="45" y="314" font-size="13" font-weight="700" fill="#111">Wire key</text>
+  <g stroke-width="4">
+    <line x1="45" y1="336" x2="85" y2="336" stroke="#d62728"/>
+    <line x1="45" y1="358" x2="85" y2="358" stroke="#111"/>
+    <line x1="45" y1="380" x2="85" y2="380" stroke="#c2185b"/>
+    <line x1="45" y1="402" x2="85" y2="402" stroke="#ff7f0e"/>
+    <line x1="45" y1="424" x2="85" y2="424" stroke="#9467bd"/>
+    <line x1="45" y1="446" x2="85" y2="446" stroke="#17becf"/>
+    <line x1="45" y1="468" x2="85" y2="468" stroke="#8c564b"/>
+    <line x1="45" y1="490" x2="85" y2="490" stroke="#555"/>
+  </g>
+  <g font-size="11.5" fill="#333">
+    <text x="95" y="340">LiPo + (up to 25.2 V)</text>
+    <text x="95" y="362">Ground (all common)</text>
+    <text x="95" y="384">9V + (Arduino logic)</text>
+    <text x="95" y="406">5V from Arduino</text>
+    <text x="95" y="428">Servo signal (D11)</text>
+    <text x="95" y="450">LED data (A3)</text>
+    <text x="95" y="472">MOSFET gate PWM (D10)</text>
+    <text x="95" y="494">Motor − to MOSFET drain</text>
+    <text x="45" y="515" fill="#777">Stepper: 4 colours = 4 coil wires</text>
+  </g>
+</svg>

@@ -1,0 +1,22 @@
+# sketch.yaml -- arduino-cli profile pinning the platform and libraries of the D-Sentry RA4M1
+# sketch (spec 2: "pin every library version"). The same pins, one per line, are in
+# ../libraries.txt, which tools/build.sh checks the installed copies against.
+#
+#   arduino-cli compile --profile uno_r4_wifi D-SentryCode/firmware-ra4m1/dsentry
+#
+# A profile build installs these exact versions into arduino-cli's own profile cache (it may
+# need the network once). tools/build.sh compiles without --profile, against the installed
+# core and sketchbook libraries, and fails if their versions differ from these pins.
+# The trigger servo is driven by the core's PwmOut, so the Servo library is not needed.
+#
+# SPDX-License-Identifier: MIT
+profiles:
+  uno_r4_wifi:
+    fqbn: arduino:renesas_uno:unor4wifi
+    platforms:
+      - platform: arduino:renesas_uno (1.6.0)
+    libraries:
+      - Adafruit NeoPixel (1.15.5)
+      - LiquidCrystal I2C (1.1.2)
+
+default_fqbn: arduino:renesas_uno:unor4wifi

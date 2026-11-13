@@ -1,0 +1,56 @@
+not connected  brightness 0
+not connected  brightness 0
+not connected  brightness 0
+not connected  brightness 0
+not connected  brightness 0
+not connected  brightness 0
+not connected  brightness 0
+not connected  brightness 0
+not connected  brightness 0
+not connected  brightness 0
+not connected  brightness 0
+not connected  brightness 0
+not connected  brightness 0
+not connected  brightness 0
+not connected  brightness 0
+not connected  brightness 0
+not connected  brightness 0
+not connected  brightness 0
+not connected  brightness 0
+not connected  brightness 0
+not connected  brightness 0
+connected  brightness 12
+connected  brightness 51
+connected  brightness 89
+connected  brightness 124
+connected  brightness 155
+connected  brightness 181
+connected  brightness 203
+connected  brightness 218
+connected  brightness 228
+connected  brightness 231
+connected  brightness 228
+connected  brightness 219
+connected  brightness 203
+connected  brightness 182
+connected  brightness 156
+connected  brightness 125
+connected  brightness 90
+connected  brightness 52
+connected  brightness 13
+connected  brightness 0
+connected  brightness 0
+connected  brightness 0
+connected  brightness 0
+connected  brightness 0
+connected  brightness 0
+connected  brightness 0
+connected  brightness 0
+connected  brightness 0
+connected  brightness 0
+connected  brightness 0
+connected  brightness 0
+connected  brightness 0
+connected  brightness 0
+connected  brightness 0
+connected  brightness 0

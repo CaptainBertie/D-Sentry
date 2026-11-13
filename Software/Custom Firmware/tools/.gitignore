@@ -1,0 +1,5 @@
+# Local artefacts of tools/r4flash.py: downloaded images and device-run logs.
+# SPDX-License-Identifier: MIT
+cache/
+logs/
+__pycache__/

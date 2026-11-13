@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<!--
+  index.html - the Nerf turret dashboard page, served by tools/dashboard.py at /.
+  One file, no network resources: it reads /state once, then follows /events
+  (server-sent events) and redraws on every frame.
+  SPDX-License-Identifier: MIT
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Turret Console</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #090c0f;
+    --panel: #10151a;
+    --panel-2: #151b21;
+    --line: #232d36;
+    --grid: #18212a;
+    --grid-major: #2a3742;
+    --text: #dfe5ea;
+    --muted: #7d8a95;
+    --amber: #ffb000;
+    --amber-soft: rgba(255, 176, 0, 0.16);
+    --amber-ink: #1a1200;
+    --red: #ff3b30;
+    --red-soft: rgba(255, 59, 48, 0.2);
+    --red-deep: #2b0c0a;
+    --green: #38d98a;
+    --well-hi: #070a0c;
+    --well-lo: #1a2128;
+    --knob-hi: #46525d;
+    --knob-lo: #1f272e;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --bg: #e8ecef;
+      --panel: #fbfcfd;
+      --panel-2: #f0f3f5;
+      --line: #cdd5db;
+      --grid: #e4e9ed;
+      --grid-major: #c3ccd3;
+      --text: #10161b;
+      --muted: #56636d;
+      --amber: #b36a00;
+      --amber-soft: rgba(179, 106, 0, 0.14);
+      --amber-ink: #ffffff;
+      --red: #d0021b;
+      --red-soft: rgba(208, 2, 27, 0.12);
+      --red-deep: #ffe3e0;
+      --green: #0a8a43;
+      --well-hi: #c9d1d8;
+      --well-lo: #e9eef1;
+      --knob-hi: #ffffff;
+      --knob-lo: #d3dbe1;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.4 var(--sans);
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+  .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  [hidden] { display: none !important; }
+
+  /* ---- header strip ---- */
+  .strip {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 12px 28px;
+    padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; margin-right: auto; }
+  .brand h1 { margin: 0; font-size: 20px; letter-spacing: 0.14em; font-weight: 800; }
+  .brand .tag { color: var(--muted); font-size: 13px; }
+  .badge {
+    font: 700 11px/1 var(--mono); letter-spacing: 0.12em; padding: 5px 8px; border-radius: 4px;
+    border: 1px solid var(--amber); color: var(--amber);
+  }
+  .stats { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 0; }
+  .stats div { min-width: 0; }
+  .stats dt { font-size: 11px; letter-spacing: 0.12em; color: var(--muted); text-transform: uppercase; }
+  .stats dd { margin: 0; font: 600 15px/1.3 var(--mono); overflow-wrap: anywhere; }
+  [data-tone="good"] { color: var(--green); }
+  [data-tone="warn"] { color: var(--amber); }
+  [data-tone="bad"] { color: var(--red); }
+  [data-tone="none"] { color: var(--muted); }
+
+  .banner {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px;
+    padding: 10px 16px; background: var(--amber); color: var(--amber-ink);
+    font-weight: 700;
+  }
+  .banner strong { font-size: 18px; letter-spacing: 0.14em; }
+  .banner span { font: 500 13px/1.4 var(--mono); overflow-wrap: anywhere; }
+
+  /* ---- layout ---- */
+  .grid {
+    display: grid; gap: 16px; padding: 16px; max-width: 1440px; margin: 0 auto;
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 0.55fr) minmax(0, 1fr);
+    grid-template-areas: "aim trig ctrl" "raw raw log";
+  }
+  .aim { grid-area: aim; } .trig { grid-area: trig; } .ctrl { grid-area: ctrl; }
+  .raw { grid-area: raw; } .logp { grid-area: log; }
+  @media (max-width: 1100px) {
+    .grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+            grid-template-areas: "aim aim" "trig ctrl" "raw raw" "log log"; }
+  }
+  @media (max-width: 640px) {
+    .grid { grid-template-columns: minmax(0, 1fr);
+            grid-template-areas: "aim" "trig" "ctrl" "raw" "log"; }
+    .strip { gap: 10px 18px; }
+    .brand .tag { display: none; }
+  }
+
+  .panel {
+    position: relative; min-width: 0; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 16px;
+  }
+  .ph { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+  .ph h2 { margin: 0; font-size: 18px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; }
+  .sub { color: var(--muted); font-size: 12px; letter-spacing: 0.06em; text-align: right; }
+  body.stale .live { filter: saturate(0.25); opacity: 0.6; }
+
+  /* ---- turret aim ---- */
+  .scope { width: 100%; max-width: 560px; margin: 0 auto; }
+  .scope svg { display: block; width: 100%; height: auto; }
+  .field { fill: var(--panel-2); }
+  .fine { stroke: var(--grid); stroke-width: 0.6; fill: none; }
+  .major { stroke: var(--grid-major); stroke-width: 0.8; }
+  .axisline { stroke: var(--grid-major); stroke-width: 1.2; }
+  .rim { fill: none; stroke: var(--grid-major); stroke-width: 0.8; stroke-dasharray: 2 3; }
+  .frame { fill: none; stroke: var(--line); stroke-width: 1; }
+  .dz { fill: var(--amber-soft); stroke: var(--amber); stroke-width: 0.8; stroke-dasharray: 2 2; }
+  .edge { fill: transparent; transition: fill 0.08s; }
+  .edge.on { fill: var(--amber); }
+  .lbl { fill: var(--muted); font: 700 8.5px var(--sans); letter-spacing: 0.16em; }
+  .lbl.on { fill: var(--amber); }
+  .trail { fill: none; stroke: var(--amber); stroke-width: 1.2; stroke-opacity: 0.35; stroke-linejoin: round; }
+  .vector { stroke: var(--amber); stroke-width: 0.9; stroke-dasharray: 3 3; opacity: 0.7; }
+  .reticle circle, .reticle line { fill: none; stroke: var(--amber); stroke-width: 1.6; }
+  .reticle .pip { fill: var(--amber); stroke: none; }
+  .reticle.idle circle, .reticle.idle line { stroke: var(--muted); }
+  .reticle.idle .pip { fill: var(--muted); }
+  .reticle.hot circle, .reticle.hot line { stroke: var(--red); }
+  .reticle.hot .pip { fill: var(--red); }
+  .aimread { display: flex; align-items: baseline; justify-content: center; gap: 12px; margin-top: 12px; }
+  .aimread .k { color: var(--muted); font-weight: 700; letter-spacing: 0.14em; }
+  .aimread #aimText { font-size: clamp(26px, 4vw, 40px); font-weight: 800; letter-spacing: 0.06em; }
+  .aimread #aimText.moving { color: var(--amber); }
+  .nums { text-align: center; color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .nums b { color: var(--text); font-weight: 600; }
+
+  /* ---- trigger ---- */
+  .trigbody { display: flex; gap: 16px; align-items: stretch; transition: opacity 0.15s; }
+  .bar {
+    position: relative; flex: 0 0 56px; height: 300px; border-radius: 8px; overflow: hidden;
+    background: linear-gradient(var(--well-hi), var(--well-lo)); border: 1px solid var(--line);
+  }
+  .bar .fill {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 0%;
+    background: linear-gradient(to top, var(--amber), color-mix(in srgb, var(--amber) 55%, transparent));
+  }
+  .trig.hot .bar .fill { background: linear-gradient(to top, var(--red), color-mix(in srgb, var(--red) 55%, transparent)); }
+  .bar .tick { position: absolute; left: 0; width: 10px; border-top: 1px solid var(--grid-major); }
+  .bar .thresh { position: absolute; left: 0; right: 0; border-top: 2px dashed var(--text); opacity: 0.55; }
+  .trigside { display: flex; flex-direction: column; justify-content: space-between; gap: 12px; min-width: 0; }
+  .big { font-size: clamp(30px, 3.4vw, 44px); font-weight: 700; line-height: 1; }
+  .caption { color: var(--muted); font-size: 12px; letter-spacing: 0.08em; }
+  .lamp {
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px;
+    border: 1px solid var(--line); font-weight: 800; letter-spacing: 0.12em; color: var(--muted);
+  }
+  .bulb { width: 16px; height: 16px; border-radius: 50%; flex: none; background: var(--well-lo); border: 1px solid var(--line); }
+  .lamp.on { color: var(--red); border-color: var(--red); background: var(--red-soft); }
+  .lamp.on .bulb { background: var(--red); border-color: var(--red); box-shadow: 0 0 14px var(--red); }
+  .dotrow { display: flex; align-items: center; gap: 10px; }
+  .dot { width: 26px; height: 26px; border-radius: 50%; background: var(--well-lo); border: 1px solid var(--line); transition: none; }
+  .dot.on { background: var(--red); border-color: var(--red); box-shadow: 0 0 18px var(--red); }
+  .shots { margin-top: 10px; font-size: 12px; letter-spacing: 0.08em; color: var(--muted); }
+  .spin { height: 4px; margin-top: 10px; background: var(--well-lo); border-radius: 2px; overflow: hidden; }
+  .spinfill { height: 100%; width: 0; background: var(--amber); transition: width 0.1s linear; }
+  .fly.ready .spinfill { background: var(--green); }
+  .fly.ready #flyText { color: var(--green); }
+  .note { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; margin-top: 12px; }
+  .trigwrap { position: relative; }
+  .stamp {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) rotate(-8deg);
+    padding: 6px 14px; border: 3px solid var(--text); border-radius: 6px; color: var(--text);
+    font: 900 28px/1 var(--sans); letter-spacing: 0.24em; background: var(--panel); display: none;
+  }
+  .trig.safe .trigbody { opacity: 0.35; }
+  .trig.safe .stamp { display: block; }
+
+  /* ---- switches ---- */
+  .ctrl { display: flex; flex-direction: column; gap: 14px; }
+  .ctrl .ph { margin-bottom: 0; }
+  .unit { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: var(--panel-2); }
+  .unithead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+  .unitname { font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; font-size: 14px; }
+  .hint { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  kbd {
+    display: inline-block; min-width: 22px; padding: 2px 6px; border-radius: 11px; text-align: center;
+    font: 700 11px/16px var(--mono); color: var(--text); background: var(--panel);
+    border: 1px solid var(--grid-major); box-shadow: 0 1px 0 var(--line);
+  }
+  .swrow { display: flex; align-items: center; justify-content: center; gap: 12px; }
+  .pos { flex: 1 1 0; font: 700 13px/1.2 var(--sans); letter-spacing: 0.08em; color: var(--muted); }
+  .pos.l { text-align: right; } .pos.r { text-align: left; }
+  .sw:not(.on) .pos.l, .sw.on .pos.r { color: var(--text); }
+  .sw.mode.on .pos.r { color: var(--amber); }
+  .sw.arm.on .pos.r { color: var(--red); }
+  .track {
+    position: relative; flex: none; width: 100px; height: 42px; border-radius: 21px;
+    background: linear-gradient(var(--well-hi), var(--well-lo)); border: 1px solid var(--line);
+    box-shadow: inset 0 3px 6px rgba(0, 0, 0, 0.45);
+  }
+  .knob {
+    position: absolute; top: 3px; left: 3px; width: 50px; height: 34px; border-radius: 17px;
+    background:
+      repeating-linear-gradient(90deg, transparent 0 5px, rgba(0, 0, 0, 0.18) 5px 6px) center / 22px 14px no-repeat,
+      linear-gradient(var(--knob-hi), var(--knob-lo));
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+    transition: transform 0.18s cubic-bezier(0.3, 1.35, 0.6, 1);
+  }
+  .sw.on .knob { transform: translateX(44px); }
+  .sw.mode.on .track { background: var(--amber-soft); border-color: var(--amber); }
+  .sw.arm.on .track {
+    border-color: var(--red);
+    background: repeating-linear-gradient(-45deg, var(--red) 0 7px, var(--red-deep) 7px 14px);
+  }
+
+  .flyrow { display: flex; align-items: center; justify-content: center; gap: 14px; }
+  .wheel { width: 56px; height: 56px; flex: none; }
+  .wheel circle, .wheel line { fill: none; stroke: var(--muted); stroke-width: 3; }
+  .wheel .hub { fill: var(--muted); stroke: none; }
+  .fly.on .wheel circle, .fly.on .wheel line { stroke: var(--amber); }
+  .fly.on .wheel .hub { fill: var(--amber); }
+  .fly.on .w1 { animation: spin 0.32s linear infinite; }
+  .fly.on .w2 { animation: spin 0.32s linear infinite reverse; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .wheel { transform-origin: 50% 50%; }
+  #flyText { min-width: 92px; font-weight: 800; letter-spacing: 0.12em; color: var(--muted); }
+  .fly.on #flyText { color: var(--amber); }
+
+  /* ---- raw inputs ---- */
+  .rawgrid { display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: flex-start; }
+  .chips { display: grid; grid-template-columns: repeat(6, minmax(44px, auto)); gap: 6px; }
+  .chip {
+    padding: 6px 4px; border-radius: 6px; border: 1px solid var(--line); text-align: center;
+    font: 700 12px/1 var(--mono); color: var(--muted); background: var(--panel-2);
+  }
+  .chip.on { background: var(--amber); border-color: var(--amber); color: var(--amber-ink); }
+  .mini { display: flex; flex-direction: column; gap: 6px; }
+  .cap { font-size: 11px; letter-spacing: 0.12em; color: var(--muted); text-transform: uppercase; }
+  .dpad { display: grid; grid-template-columns: repeat(3, 22px); grid-template-rows: repeat(3, 22px); gap: 3px; }
+  .dpad span {
+    display: flex; align-items: center; justify-content: center; border-radius: 4px; font-size: 12px;
+    color: var(--muted); background: var(--panel-2); border: 1px solid var(--line);
+  }
+  .dpad span.on { background: var(--amber); color: var(--amber-ink); border-color: var(--amber); }
+  .lstick {
+    position: relative; width: 72px; height: 72px; border-radius: 8px; border: 1px solid var(--line);
+    background:
+      linear-gradient(var(--grid-major), var(--grid-major)) center / 1px 100% no-repeat,
+      linear-gradient(var(--grid-major), var(--grid-major)) center / 100% 1px no-repeat,
+      var(--panel-2);
+  }
+  .lstick i {
+    position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%;
+    left: 50%; top: 50%; background: var(--amber);
+  }
+  .hbar { width: 140px; height: 12px; border-radius: 6px; overflow: hidden; background: var(--panel-2); border: 1px solid var(--line); }
+  .hbar i { display: block; height: 100%; width: 0%; background: var(--amber); }
+  .meta { color: var(--muted); font-size: 12px; margin-top: 14px; overflow-wrap: anywhere; }
+
+  /* ---- event log ---- */
+  .log { list-style: none; margin: 0; padding: 0; max-height: 300px; overflow-y: auto; font-size: 12px; }
+  .log li { display: flex; gap: 10px; padding: 4px 0; border-bottom: 1px solid var(--grid); }
+  .log time { color: var(--muted); flex: none; }
+  .log .txt { min-width: 0; overflow-wrap: anywhere; }
+  .log li[data-kind="turret"] .txt, .log li[data-kind="safety"] .txt { color: var(--amber); font-weight: 700; }
+  .log li.armed .txt { color: var(--red); }
+  .log li[data-kind="dashboard"] .txt { color: var(--muted); }
+  .empty { color: var(--muted); font-size: 12px; }
+
+  @media (max-width: 640px) {
+    .bar { height: 200px; }
+    .chips { grid-template-columns: repeat(4, minmax(44px, 1fr)); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .knob, .edge { transition: none; }
+    .fly.on .w1, .fly.on .w2 { animation: none; }
+  }
+</style>
+</head>
+<body class="stale">
+<header class="strip">
+  <div class="brand">
+    <h1>TURRET CONSOLE</h1>
+    <span class="tag">Nerf blaster · Xbox controller</span>
+    <span class="badge" id="demo" hidden>DEMO</span>
+  </div>
+  <dl class="stats">
+    <div><dt>Board</dt><dd id="source">—</dd></div>
+    <div><dt>Controller</dt><dd id="state" data-tone="none">—</dd></div>
+    <div><dt>Battery</dt><dd id="battery">—</dd></div>
+    <div><dt>Reports</dt><dd id="rate">—</dd></div>
+    <div><dt>Link</dt><dd id="link" data-tone="none">—</dd></div>
+  </dl>
+</header>
+<div class="banner" id="banner" role="status">
+  <strong id="bannerTitle">CONNECTING</strong><span id="bannerWhy">waiting for the dashboard server</span>
+</div>
+
+<main class="grid">
+  <section class="panel aim live" aria-labelledby="aimH">
+    <div class="ph"><h2 id="aimH">Turret aim</h2><span class="sub">right stick</span></div>
+    <div class="scope">
+      <svg viewBox="-120 -120 240 240" role="img" aria-label="Right stick position">
+        <defs>
+          <pattern id="fineGrid" width="10" height="10" x="-100" y="-100" patternUnits="userSpaceOnUse">
+            <path class="fine" d="M10 0H0V10"/>
+          </pattern>
+        </defs>
+        <rect class="field" x="-100" y="-100" width="200" height="200"/>
+        <rect x="-100" y="-100" width="200" height="200" fill="url(#fineGrid)"/>
+        <path class="major" d="M-50-100V100M50-100V100M-100-50H100M-100 50H100"/>
+        <path class="axisline" d="M0-100V100M-100 0H100"/>
+        <circle class="rim" r="100"/>
+        <rect class="frame" x="-100" y="-100" width="200" height="200"/>
+        <circle class="dz" id="dz" r="15"/>
+        <rect class="edge" id="edgeUp" x="-100" y="-104" width="200" height="4"/>
+        <rect class="edge" id="edgeDown" x="-100" y="100" width="200" height="4"/>
+        <rect class="edge" id="edgeLeft" x="-104" y="-100" width="4" height="200"/>
+        <rect class="edge" id="edgeRight" x="100" y="-100" width="4" height="200"/>
+        <text class="lbl" id="lblUp" x="0" y="-109" text-anchor="middle">UP</text>
+        <text class="lbl" id="lblDown" x="0" y="115" text-anchor="middle">DOWN</text>
+        <text class="lbl" id="lblLeft" x="0" y="0" text-anchor="middle" transform="translate(-109 0) rotate(-90)">LEFT</text>
+        <text class="lbl" id="lblRight" x="0" y="0" text-anchor="middle" transform="translate(109 0) rotate(90)">RIGHT</text>
+        <polyline class="trail" id="trail" points=""/>
+        <line class="vector" id="vector" x1="0" y1="0" x2="0" y2="0"/>
+        <g class="reticle idle" id="reticle">
+          <circle r="8"/>
+          <line x1="-15" y1="0" x2="-10" y2="0"/><line x1="10" y1="0" x2="15" y2="0"/>
+          <line x1="0" y1="-15" x2="0" y2="-10"/><line x1="0" y1="10" x2="0" y2="15"/>
+          <circle class="pip" r="2"/>
+        </g>
+      </svg>
+    </div>
+    <div class="aimread"><span class="k">AIM</span><span id="aimText">CENTRE</span></div>
+    <div class="nums mono">X <b id="rxv">+0.00</b> &nbsp; Y <b id="ryv">+0.00</b> &nbsp;·&nbsp; deadzone <span id="dzv">15%</span></div>
+  </section>
+
+  <section class="panel trig live safe" id="trigPanel" aria-labelledby="trigH">
+    <div class="ph"><h2 id="trigH">Trigger</h2><span class="sub">RT fires</span></div>
+    <div class="trigwrap">
+    <div class="trigbody">
+      <div class="bar" aria-hidden="true">
+        <div class="fill" id="rtFill"></div>
+        <div class="tick" style="bottom:25%"></div><div class="tick" style="bottom:50%"></div><div class="tick" style="bottom:75%"></div>
+        <div class="thresh" id="thresh" style="bottom:10%"></div>
+      </div>
+      <div class="trigside">
+        <div><div class="caption">RT</div><div class="big mono" id="rtv">0%</div></div>
+        <div class="dotrow"><div class="dot" id="fireDot" title="flashes for 0.1 s each time a dart fires"></div><span class="caption">DART</span></div>
+        <div class="shots mono" id="shots">darts 0</div>
+      </div>
+    </div>
+    <div class="stamp" aria-hidden="true">SAFE</div>
+    </div>
+    <div class="note" id="fireNote">fires past the dashed 10% line</div>
+  </section>
+
+  <section class="panel ctrl live" aria-labelledby="ctrlH">
+    <div class="ph"><h2 id="ctrlH">Switches</h2><span class="sub">toggle on press</span></div>
+    <div class="unit sw mode" id="modeSw">
+      <div class="unithead"><span class="unitname">Fire mode</span><span class="hint">flips on <kbd>A</kbd></span></div>
+      <div class="swrow"><span class="pos l">SEMI</span><div class="track"><div class="knob"></div></div><span class="pos r">FULL AUTO</span></div>
+    </div>
+    <div class="unit sw arm" id="armSw">
+      <div class="unithead"><span class="unitname">Armed</span><span class="hint">flips on <kbd>X</kbd></span></div>
+      <div class="swrow"><span class="pos l">SAFE</span><div class="track"><div class="knob"></div></div><span class="pos r">ARMED</span></div>
+    </div>
+    <div class="unit fly" id="fly">
+      <div class="unithead"><span class="unitname">Flywheels</span><span class="hint">hold <kbd>LB</kbd></span></div>
+      <div class="flyrow">
+        <svg class="wheel w1" viewBox="-30 -30 60 60" aria-hidden="true"><circle r="26"/><line x1="0" y1="-24" x2="0" y2="24"/><line x1="-21" y1="-12" x2="21" y2="12"/><line x1="-21" y1="12" x2="21" y2="-12"/><circle class="hub" r="5"/></svg>
+        <svg class="wheel w2" viewBox="-30 -30 60 60" aria-hidden="true"><circle r="26"/><line x1="0" y1="-24" x2="0" y2="24"/><line x1="-21" y1="-12" x2="21" y2="12"/><line x1="-21" y1="12" x2="21" y2="-12"/><circle class="hub" r="5"/></svg>
+        <span id="flyText">idle</span>
+      </div>
+      <div class="spin" aria-hidden="true"><div class="spinfill" id="spinFill"></div></div>
+    </div>
+  </section>
+
+  <section class="panel raw live" aria-labelledby="rawH">
+    <div class="ph"><h2 id="rawH">Raw inputs</h2><span class="sub">every button, as the board sends it</span></div>
+    <div class="rawgrid">
+      <div class="mini"><span class="cap">Buttons</span><div class="chips" id="chips"></div></div>
+      <div class="mini"><span class="cap">D-pad</span><div class="dpad" id="dpad"></div></div>
+      <div class="mini"><span class="cap">Left stick</span><div class="lstick"><i id="lsDot"></i></div></div>
+      <div class="mini"><span class="cap">LT</span><div class="hbar"><i id="ltFill"></i></div><span class="mono" id="ltv">0%</span></div>
+    </div>
+    <div class="meta mono" id="meta">no data yet</div>
+  </section>
+
+  <section class="panel logp" aria-labelledby="logH">
+    <div class="ph"><h2 id="logH">Event log</h2><span class="sub">newest first · last 50</span></div>
+    <ol class="log mono" id="log"></ol>
+    <div class="empty" id="logEmpty">nothing yet</div>
+  </section>
+</main>
+
+<script>
+"use strict";
+// Page logic: keep the newest frame, draw it once per animation frame, and keep the event log.
+const $ = (id) => document.getElementById(id);
+const BUTTONS = [["a", "A"], ["b", "B"], ["x", "X"], ["y", "Y"], ["lb", "LB"], ["rb", "RB"],
+                 ["view", "View"], ["menu", "Menu"], ["xbox", "Xbox"], ["ls", "LS"], ["rs", "RS"], ["share", "Share"]];
+// d-pad 3x3 cells, row by row; the word is what /events sends
+const DPAD = [["up-left", "↖"], ["up", "↑"], ["up-right", "↗"], ["left", "←"], ["none", "·"],
+              ["right", "→"], ["down-left", "↙"], ["down", "↓"], ["down-right", "↘"]];
+const LOG_KEEP = 50;
+const TRAIL_KEEP = 36;
+const QUIET_LIMIT_MS = 2500;    // the server sends a frame or a ping at least once a second
+const RESTART_EVERY_MS = 5000;  // while frozen, open a fresh stream this often
+
+let latest = null;        // newest frame from the server
+let receivedAt = 0;       // performance.now() when it arrived, to age link_age between frames
+let drawPending = false;
+let serverUp = false;
+let boot = null;          // server instance; a new one means its log restarted
+let lastLogId = 0;
+let source = null;        // the current EventSource
+let lastHeard = performance.now();  // last frame or ping from the server
+let frozen = false;       // stream open but silent past QUIET_LIMIT_MS
+let lastRestart = 0;
+const trail = [];
+
+function buildStatic() {
+  const chips = $("chips");
+  for (const [key, label] of BUTTONS) {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.dataset.key = key;
+    chip.textContent = label;
+    chips.appendChild(chip);
+  }
+  const dpad = $("dpad");
+  for (const [word, glyph] of DPAD) {
+    const cell = document.createElement("span");
+    cell.dataset.word = word;
+    cell.textContent = glyph;
+    dpad.appendChild(cell);
+  }
+}
+
+function signed(v) {
+  return (v < 0 ? "-" : "+") + Math.abs(v).toFixed(2);
+}
+
+function pct(v) {
+  return Math.round(v * 100) + "%";
+}
+
+function stateTone(state) {
+  if (state === null || state === undefined) return "none";
+  if (state === 0) return "good";
+  if (state >= 4) return "bad";       // off, blocked
+  return "warn";                      // waiting, connecting, scanning
+}
+
+function onFrame(frame) {
+  if (frame.boot !== boot) {          // server restarted: its log ids start again
+    boot = frame.boot;
+    lastLogId = 0;
+    $("log").replaceChildren();
+  }
+  addLog(frame.log || []);
+  latest = frame;
+  receivedAt = performance.now();
+  requestDraw();
+}
+
+function requestDraw() {
+  if (drawPending) return;
+  drawPending = true;
+  requestAnimationFrame(draw);
+}
+
+// The values on screen are not live: no server, a frozen server, or no data from the board.
+function isStale() {
+  return !serverUp || frozen || !latest || !latest.link_ok;
+}
+
+function draw() {
+  drawPending = false;
+  document.body.classList.toggle("stale", isStale());
+  drawBanner();
+  const f = latest;
+  if (!f) return;
+  drawHeader(f);
+  drawAim(f);
+  drawTrigger(f);
+  drawSwitches(f);
+  drawRaw(f);
+}
+
+// While stale, the last controller state stays readable but grey and marked, so an old
+// green CONNECTED never sits next to a lost link.
+function drawHeader(f) {
+  const stale = isStale();
+  const serverLive = serverUp && !frozen;
+  $("source").textContent = f.source;
+  $("demo").hidden = !f.demo;
+  const state = $("state");
+  state.textContent = f.state_word.toUpperCase() + (stale && f.have_data ? " (stale)" : "");
+  state.dataset.tone = stale ? "none" : stateTone(f.state);
+  const battery = $("battery");
+  battery.textContent = f.battery === null ? (f.have_data ? "?" : "—") : f.battery + "%";
+  battery.dataset.tone = stale ? "none" : "";
+  const rate = $("rate");
+  rate.textContent = serverLive ? f.rate + "/s" : "—";
+  rate.dataset.tone = serverLive ? "" : "none";
+  const link = $("link");
+  link.textContent = !serverLive ? "?" : f.link_ok ? "OK" : "LOST";
+  link.dataset.tone = !serverLive ? "none" : f.link_ok ? "good" : "warn";
+}
+
+// The banner says why nothing live is shown; link_age is aged locally between frames.
+function drawBanner() {
+  const f = latest;
+  let title = "", why = "";
+  if (!serverUp) {
+    title = "DASHBOARD OFFLINE";
+    why = "cannot reach the dashboard server; retrying";
+  } else if (frozen) {
+    title = "NO UPDATES";
+    why = "nothing from the dashboard server for " +
+          ((performance.now() - lastHeard) / 1000).toFixed(1) +
+          " s · display frozen, turret state unknown · reconnecting";
+  } else if (f && !f.link_ok) {
+    title = "LINK LOST";
+    if (f.link_age === null) {
+      why = "no data from the board yet";
+    } else {
+      const age = f.link_age + (performance.now() - receivedAt) / 1000;
+      why = "no data from the board for " + age.toFixed(1) + " s · turret forced SAFE";
+    }
+    const note = lastBoardNote();
+    if (note) why += " · last message: " + note;
+  }
+  $("banner").hidden = !title;
+  $("bannerTitle").textContent = title;
+  $("bannerWhy").textContent = why;
+}
+
+// Newest line the board itself printed (for example "# begin failed: ..."), if any.
+function lastBoardNote() {
+  const entry = $("log").querySelector('li[data-kind="board"]');   // list is newest first
+  return entry ? entry.querySelector(".txt").textContent : "";
+}
+
+function drawAim(f) {
+  const x = f.rx * 100, y = -f.ry * 100;      // SVG y grows downward
+  const centred = f.aim === "centre";
+  $("reticle").setAttribute("transform", "translate(" + x.toFixed(1) + " " + y.toFixed(1) + ")");
+  $("reticle").setAttribute("class", "reticle" + (f.firing ? " hot" : centred ? " idle" : ""));
+  const vector = $("vector");
+  vector.setAttribute("x2", x.toFixed(1));
+  vector.setAttribute("y2", y.toFixed(1));
+  const last = trail[trail.length - 1];
+  if (!last || Math.abs(last[0] - x) + Math.abs(last[1] - y) > 0.5) {
+    trail.push([x, y]);
+    if (trail.length > TRAIL_KEEP) trail.shift();
+  }
+  $("trail").setAttribute("points", trail.map((p) => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" "));
+  $("dz").setAttribute("r", (f.deadzone * 100).toFixed(1));
+  $("dzv").textContent = pct(f.deadzone);
+  for (const [side, on] of [["Up", f.aim_y === "up"], ["Down", f.aim_y === "down"],
+                            ["Left", f.aim_x === "left"], ["Right", f.aim_x === "right"]]) {
+    $("edge" + side).classList.toggle("on", on);
+    $("lbl" + side).classList.toggle("on", on);
+  }
+  const words = [f.aim_x, f.aim_y].filter(Boolean).map((w) => w.toUpperCase());
+  const aimText = $("aimText");
+  aimText.textContent = centred ? "CENTRE" : words.join(" · ");
+  aimText.classList.toggle("moving", !centred);
+  $("rxv").textContent = signed(f.rx);
+  $("ryv").textContent = signed(f.ry);
+}
+
+// The red dot lights for FLASH_MS after every dart: one blink per dart in semi, and in full
+// auto one blink per dart at the dart rate (3 per second). The server counts darts and reports
+// how long ago the last one left; the page times the flash with requestAnimationFrame.
+const FLASH_MS = 100;
+let lastShots = null, lastShotAt = null, shotIntervalMs = 333;
+function noteShots(f) {
+  if (lastShots === null || f.shots < lastShots) lastShotAt = null;      // first frame / server restart
+  if (f.last_shot_age !== null && f.last_shot_age !== undefined) {
+    const at = performance.now() - f.last_shot_age * 1000;
+    if (lastShotAt === null || f.shots > lastShots) lastShotAt = at;
+  }
+  lastShots = f.shots;
+  shotIntervalMs = f.shot_interval * 1000;
+}
+function lampLoop() {
+  const on = lastShotAt !== null && (performance.now() - lastShotAt) < FLASH_MS;
+  $("fireDot").classList.toggle("on", on);
+  requestAnimationFrame(lampLoop);
+}
+requestAnimationFrame(lampLoop);
+
+function drawTrigger(f) {
+  $("rtFill").style.height = (f.rt * 100).toFixed(1) + "%";
+  $("thresh").style.bottom = (f.fire_threshold * 100) + "%";
+  $("rtv").textContent = pct(f.rt);
+  const panel = $("trigPanel");
+  panel.classList.toggle("safe", !f.armed);
+  panel.classList.toggle("hot", f.firing);
+  noteShots(f);
+  $("shots").textContent = "darts " + f.shots;
+  let note;
+  if (!f.armed) note = "disarmed: the trigger does nothing";
+  else if (!f.flywheels) note = "hold LB: the flywheels need " + f.spinup_s.toFixed(1) + " s to come up to speed";
+  else if (!f.flywheels_ready) note = "flywheels spinning up: " + f.spinup.toFixed(1) + " / " + f.spinup_s.toFixed(1) + " s";
+  else if (f.fire_mode === "full") note = "FULL AUTO: " + Math.round(1 / f.shot_interval) + " darts/s while held past " + pct(f.fire_threshold);
+  else note = "SEMI: one dart per pull past " + pct(f.fire_threshold) + ", at most " + Math.round(1 / f.shot_interval) + "/s; release to reload";
+  $("fireNote").textContent = note;
+}
+
+function drawSwitches(f) {
+  $("modeSw").classList.toggle("on", f.fire_mode === "full");
+  $("armSw").classList.toggle("on", f.armed);
+  $("fly").classList.toggle("on", f.flywheels);
+  $("fly").classList.toggle("ready", f.flywheels_ready);
+  $("flyText").textContent = !f.flywheels ? "idle" : f.flywheels_ready ? "READY" : "SPINNING UP";
+  $("spinFill").style.width = (100 * f.spinup / f.spinup_s).toFixed(0) + "%";
+}
+
+function drawRaw(f) {
+  for (const chip of $("chips").children) {
+    chip.classList.toggle("on", !!f.buttons[chip.dataset.key]);
+  }
+  for (const cell of $("dpad").children) {
+    cell.classList.toggle("on", cell.dataset.word === f.dpad && f.dpad !== "none");
+  }
+  const dot = $("lsDot");
+  dot.style.left = (50 + f.lx * 42).toFixed(1) + "%";
+  dot.style.top = (50 - f.ly * 42).toFixed(1) + "%";
+  $("ltFill").style.width = (f.lt * 100).toFixed(1) + "%";
+  $("ltv").textContent = pct(f.lt);
+  $("meta").textContent = f.have_data
+    ? "seq " + f.seq + " · board " + f.board_ms + " ms · buttons 0x" + f.buttons_hex +
+      " · lines " + f.lines + " · bad " + f.bad_lines
+    : "no data yet · bad lines " + f.bad_lines;
+}
+
+function clock(t) {
+  const d = new Date(t * 1000);
+  const two = (n) => String(n).padStart(2, "0");
+  return two(d.getHours()) + ":" + two(d.getMinutes()) + ":" + two(d.getSeconds()) + "." +
+         String(d.getMilliseconds()).padStart(3, "0");
+}
+
+// Each entry arrives once per stream; ids only grow, so anything <= lastLogId is a repeat.
+function addLog(entries) {
+  const list = $("log");
+  for (const e of entries) {
+    if (e.id <= lastLogId) continue;
+    lastLogId = e.id;
+    const li = document.createElement("li");
+    li.dataset.kind = e.kind;
+    if (e.kind === "turret" && e.text === "X: ARMED") li.classList.add("armed");
+    const time = document.createElement("time");
+    time.textContent = clock(e.t);
+    const txt = document.createElement("span");
+    txt.className = "txt";
+    txt.textContent = e.text;            // textContent: serial text is never parsed as HTML
+    li.append(time, txt);
+    list.prepend(li);
+  }
+  while (list.children.length > LOG_KEEP) list.lastElementChild.remove();
+  $("logEmpty").hidden = list.children.length > 0;
+}
+
+function setServerUp(up) {
+  serverUp = up;
+  requestDraw();
+}
+
+function heard() {
+  lastHeard = performance.now();
+  if (frozen) {
+    frozen = false;
+    requestDraw();
+  }
+}
+
+// A server that is suspended (Ctrl+Z), hung, or behind a dropped Wi-Fi link sends nothing
+// and raises no error, so EventSource alone would leave the last frame on screen as if live.
+// The server pings every second when idle; silence past QUIET_LIMIT_MS means frozen.
+function watchdog() {
+  const quiet = performance.now() - lastHeard;
+  const nowFrozen = serverUp && quiet > QUIET_LIMIT_MS;
+  if (nowFrozen !== frozen) {
+    frozen = nowFrozen;
+    requestDraw();
+  }
+  if (frozen && performance.now() - lastRestart > RESTART_EVERY_MS) {
+    lastRestart = performance.now();
+    connect();   // a fresh stream recovers a connection that died without an error
+  }
+  drawBanner();
+}
+
+// EventSource reconnects by itself after a drop (the server asks for 1 s); if the browser
+// gives up (CLOSED), start a new one. Only one stream is ever open.
+function connect() {
+  if (source) source.close();
+  const es = new EventSource("/events");
+  source = es;
+  es.onopen = () => { heard(); setServerUp(true); };
+  es.addEventListener("ping", heard);
+  es.onmessage = (event) => {
+    heard();
+    try {
+      onFrame(JSON.parse(event.data));
+      if (!serverUp) setServerUp(true);
+    } catch (err) {
+      console.warn("bad frame", err);
+    }
+  };
+  es.onerror = () => {
+    setServerUp(false);
+    if (es.readyState === EventSource.CLOSED) {
+      es.close();
+      setTimeout(connect, 2000);
+    }
+  };
+}
+
+buildStatic();
+fetch("/state", { cache: "no-store" })
+  .then((r) => r.json())
+  .then((frame) => { heard(); serverUp = true; onFrame(frame); })
+  .catch(() => setServerUp(false));
+connect();
+setInterval(watchdog, 250);
+</script>
+</body>
+</html>

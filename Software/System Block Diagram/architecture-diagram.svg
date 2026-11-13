@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 680" font-family="Helvetica,Arial,sans-serif">
+  <defs>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#a33327"/></marker>
+    <marker id="k" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#8a97a3"/></marker>
+  </defs>
+  <rect x="0" y="0" width="1200" height="680" fill="#f3f5f7"/>
+
+  <text x="40" y="36" font-size="13" font-weight="700" fill="#a33327">D-SENTRY</text>
+  <text x="300" y="36" font-size="12" font-weight="700" fill="#5c6c7c" text-anchor="middle" letter-spacing="1">SYSTEM</text>
+  <text x="900" y="36" font-size="12" font-weight="700" fill="#5c6c7c" text-anchor="middle" letter-spacing="1">LOOP</text>
+  <line x1="600" y1="40" x2="600" y2="610" stroke="#c3ccd4" stroke-width="1.5" stroke-dasharray="4 4"/>
+
+  <!-- ===== LEFT: SYSTEM ===== -->
+  <g font-size="13" font-weight="600" fill="#182636">
+    <rect x="170" y="60" width="180" height="50" rx="8" fill="#fff" stroke="#c3ccd4"/>
+    <text x="260" y="90" text-anchor="middle">Pad</text>
+
+    <rect x="70" y="170" width="170" height="60" rx="8" fill="#fff" stroke="#c3ccd4"/>
+    <text x="155" y="196" text-anchor="middle">ESP32</text>
+    <rect x="270" y="170" width="170" height="60" rx="8" fill="#fff" stroke="#c3ccd4"/>
+    <text x="355" y="196" text-anchor="middle">Relay (PC)</text>
+
+    <rect x="150" y="290" width="230" height="80" rx="10" fill="#fff" stroke="#a33327" stroke-width="2.5"/>
+    <text x="265" y="325" text-anchor="middle" font-size="14">RA4M1</text>
+
+    <rect x="40" y="450" width="110" height="56" rx="8" fill="#fff" stroke="#c3ccd4"/>
+    <rect x="160" y="450" width="110" height="56" rx="8" fill="#fff" stroke="#c3ccd4"/>
+    <rect x="280" y="450" width="120" height="56" rx="8" fill="#fff" stroke="#c3ccd4"/>
+    <rect x="410" y="450" width="120" height="56" rx="8" fill="#fff" stroke="#c3ccd4"/>
+  </g>
+  <g font-size="11.5" font-weight="600" fill="#182636">
+    <text x="95" y="482" text-anchor="middle">Steppers</text>
+    <text x="215" y="482" text-anchor="middle">Servo</text>
+    <text x="340" y="482" text-anchor="middle">Flywheel</text>
+    <text x="470" y="482" text-anchor="middle">LED/LCD</text>
+  </g>
+  <text x="265" y="347" text-anchor="middle" font-size="10.5" fill="#5c6c7c" font-style="italic">brain</text>
+
+  <g stroke="#a33327" fill="none" stroke-width="2">
+    <path d="M230,110 L170,170" stroke-dasharray="5 4" marker-end="url(#r)"/>
+    <path d="M290,110 L340,170" stroke-dasharray="5 4" marker-end="url(#r)"/>
+    <path d="M270,200 L240,200" marker-end="url(#r)"/>
+    <path d="M160,230 L205,290" marker-end="url(#r)"/>
+    <path d="M335,230 L325,290" stroke-width="3.5" marker-end="url(#r)"/>
+  </g>
+  <g font-size="10.5" font-weight="600" fill="#a33327">
+    <text x="182" y="145">BLE</text>
+    <text x="345" y="145">WiFi</text>
+    <text x="255" y="192">UDP</text>
+    <text x="155" y="268">AT</text>
+    <text x="345" y="258">USB</text>
+    <text x="345" y="270">wins</text>
+  </g>
+  <g stroke="#8a97a3" fill="none" stroke-width="2">
+    <path d="M190,370 L110,450" marker-end="url(#k)"/>
+    <path d="M235,370 L220,450" marker-end="url(#k)"/>
+    <path d="M300,370 L330,450" marker-end="url(#k)"/>
+    <path d="M360,370 L450,450" marker-end="url(#k)"/>
+  </g>
+
+  <!-- ===== RIGHT: LOOP ===== -->
+  <g font-size="13" font-weight="600" fill="#182636">
+    <rect x="770" y="60" width="200" height="50" rx="8" fill="#fff" stroke="#c3ccd4"/>
+    <text x="870" y="90" text-anchor="middle">Begin</text>
+
+    <rect x="770" y="170" width="200" height="50" rx="8" fill="#fff" stroke="#c3ccd4"/>
+    <text x="870" y="200" text-anchor="middle">Read</text>
+
+    <rect x="750" y="270" width="240" height="64" rx="10" fill="#fff" stroke="#a33327" stroke-width="2.5"/>
+    <text x="870" y="308" text-anchor="middle" font-size="14">Decide</text>
+
+    <rect x="770" y="380" width="200" height="50" rx="8" fill="#fff" stroke="#c3ccd4"/>
+    <text x="870" y="410" text-anchor="middle">Act</text>
+
+    <rect x="770" y="480" width="200" height="50" rx="8" fill="#fff" stroke="#c3ccd4"/>
+    <text x="870" y="510" text-anchor="middle">Show</text>
+  </g>
+  <g font-size="10" fill="#5c6c7c" font-style="italic">
+    <text x="870" y="107" text-anchor="middle">claim HW, wire parts</text>
+    <text x="870" y="217" text-anchor="middle">link + input + stall</text>
+    <text x="870" y="325" text-anchor="middle">TurretState: who may act</text>
+    <text x="870" y="427" text-anchor="middle">trigger &#8594; fly &#8594; motion</text>
+    <text x="870" y="527" text-anchor="middle">LED/LCD + telemetry</text>
+  </g>
+
+  <g stroke="#8a97a3" fill="none" stroke-width="2">
+    <path d="M870,110 L870,170" marker-end="url(#k)"/>
+    <path d="M870,220 L870,270" marker-end="url(#k)"/>
+    <path d="M870,334 L870,380" marker-end="url(#k)"/>
+    <path d="M870,430 L870,480" marker-end="url(#k)"/>
+    <path d="M970,505 L1150,505 L1150,195 L970,195" marker-end="url(#k)"/>
+  </g>
+  <text x="1070" y="187" font-size="10.5" fill="#5c6c7c" text-anchor="middle">loop</text>
+
+  <text x="870" y="565" text-anchor="middle" font-size="11" fill="#5c6c7c" font-family="Menlo,Consolas,monospace">OFF &#8594; BOOT &#8594; CAL &#8594; PAIR &#8594; DISARM &#8646; ARM &#8594; FAULT</text>
+
+  <text x="600" y="645" text-anchor="middle" font-size="10.5" fill="#5c6c7c">red = control / decide &#183; gray = mechanical &#183; thick = bench override wins</text>
+</svg>

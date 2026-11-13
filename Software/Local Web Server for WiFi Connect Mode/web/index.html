@@ -1,0 +1,1653 @@
+<!DOCTYPE html>
+<!--
+  D-Sentry dashboard (docs/architecture.md section 7). Served by relay-pc/dsentry_relay.py.
+  One file, no network resources: inline CSS and JS, a hand-rolled canvas 3D renderer.
+  Every tunable comes from config.h through GET /config; the numbers written here are pure
+  presentation (sizes, render geometry, colours) and are named constants.
+  Every turret value is the RA4M1's TelemetryPacket; nothing is computed on the PC. Values that
+  are not live (stale, none yet, relay not responding) are greyed and stamped, never shown as live.
+  SPDX-License-Identifier: MIT
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>D-Sentry Dashboard</title>
+<link rel="icon" href="data:,">
+<style>
+  :root {
+    --bg: #eef1f4; --panel: #ffffff; --panel-2: #f5f7f9; --line: #d5dbe1; --text: #1b232c;
+    --muted: #5d6a76; --accent: #1f6feb; --ok: #1a7f37; --warn: #b26a00; --bad: #cf222e;
+    --info: #6639ba; --armed: #c25e00; --kb: #cf222e; --kb-text: #ffffff; --stale: #8b949e;
+    --lcd-bg: #9fd36b; --lcd-fg: #13300b; --lcd-cell: #93c95f; --lcd-frame: #2b3a1f;
+    --r-bg: #f7f9fb; --r-grid: #dfe5ea; --r-base: #6b7b8a; --r-yoke: #95a3b0; --r-barrel: #e0a100;
+    --r-home: #1f6feb; --r-limit: #cf222e; --r-arc: #1a7f37; --r-ghost: #b8c0c8;
+    --g-sample: #1f6feb; --g-base: #1a7f37; --g-band: rgba(207,34,46,0.10); --g-band-line: rgba(207,34,46,0.55);
+    --btn-a: #1a7f37; --btn-b: #cf222e; --btn-x: #1f6feb; --btn-y: #9a6700; --btn-text: #ffffff;
+    /* CONTROLLER MAP drawing (contrast: parts, letters and glyphs >= 4.5:1 on what they sit on,
+       outlines and leaders >= 3:1 on the panel and the body) */
+    --cm-body: #dde3e9; --cm-edge: #5f6b77; --cm-part: #2c343d; --cm-part-edge: #2c343d; --cm-well: #c3cbd3;
+    --cm-cap-in: #3a434d; --cm-glyph: #e8edf2; --cm-leader: #6b7784; --cm-lit: #1f6feb; --cm-lit-fg: #ffffff;
+    --cm-halo: #1f6feb; --cm-dot: #e8edf2; --cm-dot-lit: #7cb6ff; --cm-dead: #aab4be;
+    --cm-a: #5ad67d; --cm-b: #ff8079; --cm-x: #6cb2ff; --cm-y: #ffd043; --cm-on-fg: #10161c;
+    --cm-ink-a: #127a2e; --cm-ink-b: #c0281f; --cm-ink-x: #0b5fc0; --cm-ink-y: #8a6100;
+    --cm-mark-o: #ffffff; --cm-mark-u: #10161c;
+    --shadow: 0 1px 2px rgba(27,35,44,0.08);
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0f14; --panel: #131a22; --panel-2: #0f151c; --line: #263241; --text: #d6dee6;
+      --muted: #8796a5; --accent: #4c9aff; --ok: #3fb950; --warn: #e3a008; --bad: #ff5c5c;
+      --info: #b392f0; --armed: #ff9a3c; --kb: #ff3b3b; --kb-text: #ffffff; --stale: #6e7781;
+      --lcd-bg: #1a4fbf; --lcd-fg: #e8f1ff; --lcd-cell: #2158cc; --lcd-frame: #0a1a3d;
+      --r-bg: #0f151c; --r-grid: #1d2833; --r-base: #5b6b7a; --r-yoke: #8c9aa6; --r-barrel: #ffb000;
+      --r-home: #4c9aff; --r-limit: #ff5c5c; --r-arc: #3fb950; --r-ghost: #3a4652;
+      --g-sample: #4c9aff; --g-base: #3fb950; --g-band: rgba(255,92,92,0.12); --g-band-line: rgba(255,92,92,0.6);
+      --btn-a: #238636; --btn-b: #da3633; --btn-x: #1f6feb; --btn-y: #9e6a03; --btn-text: #ffffff;
+      --cm-body: #2b343e; --cm-edge: #8492a0; --cm-part: #0d1217; --cm-part-edge: #7d8b99; --cm-well: #1a2028;
+      --cm-cap-in: #1b222a; --cm-glyph: #c6cfd8; --cm-leader: #7d8b99; --cm-lit: #4c9aff; --cm-lit-fg: #0b0f14;
+      --cm-halo: #4c9aff; --cm-dot: #c6cfd8; --cm-dot-lit: #4c9aff; --cm-dead: #76838f;
+      --cm-a: #4cc76a; --cm-b: #ff6b66; --cm-x: #58a6ff; --cm-y: #f5c13d; --cm-on-fg: #0b0f14;
+      --cm-ink-a: #4cc76a; --cm-ink-b: #ff6b66; --cm-ink-x: #58a6ff; --cm-ink-y: #f5c13d;
+      --cm-mark-o: #ffffff; --cm-mark-u: #0b0f14;
+      --shadow: none;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.4 var(--sans); }
+  .kb-banner { position: sticky; top: 0; z-index: 10; background: var(--kb); color: var(--kb-text);
+    font: 800 22px/1.2 var(--sans); letter-spacing: 0.08em; text-align: center; padding: 10px 16px; }
+  .kb-banner small { display: block; font: 600 13px/1.3 var(--sans); letter-spacing: 0; opacity: 0.95; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 16px;
+    border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 18px; margin: 0 8px 0 0; letter-spacing: 0.02em; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--panel-2); font-weight: 600; font-size: 13px; white-space: nowrap; }
+  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--stale); }
+  .pill.ok .dot { background: var(--ok); } .pill.warn .dot { background: var(--warn); } .pill.bad .dot { background: var(--bad); }
+  .pill.bad { color: var(--bad); border-color: var(--bad); }
+  .pill.warn { color: var(--warn); border-color: var(--warn); }
+  .badge-demo { background: var(--info); color: #fff; border-color: var(--info); }
+  .grow { flex: 1; }
+  .muted { color: var(--muted); }
+  .notice { margin: 12px 16px 0; padding: 10px 14px; border-radius: 8px; font-weight: 700;
+    border: 2px dashed var(--bad); color: var(--bad); background: var(--panel); }
+  .notice.warn { border-color: var(--warn); color: var(--warn); }
+  main { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; padding: 12px 16px 24px;
+    container: dash / inline-size; }
+  /* The turret and the CONTROLLER MAP share the first row; the map takes what the turret leaves.
+     The widths below follow main's columns (330px minimum, 12px gaps): 3 columns from 1014px. */
+  .top-row { grid-column: 1 / -1; display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
+  @container dash (min-width: 868px) { .top-row { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); } }
+  @supports (grid-template-columns: subgrid) {
+    @container dash (min-width: 1014px) {
+      .top-row { grid-template-columns: subgrid; }
+      .top-row > .turret { grid-column: 1 / span 2; }
+      .top-row > .cmap { grid-column: 3 / -1; }
+    }
+  }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+    box-shadow: var(--shadow); min-width: 0; position: relative; }
+  .span2 { grid-column: span 2; }
+  @media (max-width: 720px) { .span2 { grid-column: span 1; } main { padding: 12px 16px; } }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted);
+    margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+  .panel h2 .stamp { display: none; color: #fff; background: var(--bad); border-radius: 4px; padding: 1px 6px;
+    letter-spacing: 0.06em; font-size: 11px; }
+  body.not-live .panel[data-telem] h2 .stamp, body.srv-down .panel[data-relay] h2 .stamp { display: inline-block; }
+  body.srv-down .panel[data-relay] dd, body.srv-down .panel[data-relay] .chip.on { color: var(--stale) !important; }
+  body.srv-down .panel[data-relay] .chip.on { background: var(--panel-2) !important; border-color: var(--stale) !important; }
+  body.not-live .tv { color: var(--stale) !important; }
+  body.not-live .panel[data-telem] .meter > span { background: var(--stale) !important; }
+  dl.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; }
+  dl.kv dt { color: var(--muted); }
+  dl.kv dd { margin: 0; font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: anywhere; }
+  .big { font-size: 28px; font-weight: 800; letter-spacing: 0.04em; }
+  .state-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+  .st-ARMED { color: var(--armed); } .st-DISARMED { color: var(--ok); } .st-FAULT { color: var(--bad); }
+  .st-PAIRING { color: var(--accent); } .st-OFF { color: var(--muted); }
+  .meter { height: 10px; border-radius: 5px; background: var(--panel-2); border: 1px solid var(--line); overflow: hidden; position: relative; }
+  .meter > span { display: block; height: 100%; background: var(--accent); width: 0; }
+  .meter .mark { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--muted); }
+  .pips { display: flex; flex-wrap: wrap; gap: 3px; margin: 4px 0 8px; }
+  .pip { width: 10px; height: 18px; border-radius: 3px; background: var(--panel-2); border: 1px solid var(--line); }
+  .pip.on { background: var(--r-barrel); border-color: var(--r-barrel); }
+  body.not-live .pip.on { background: var(--stale); border-color: var(--stale); }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip { font: 600 11px/1 var(--mono); padding: 4px 6px; border-radius: 5px; border: 1px solid var(--line);
+    color: var(--muted); background: var(--panel-2); }
+  .chip.on { color: #fff; background: var(--accent); border-color: var(--accent); }
+  .chip.on.bad { background: var(--bad); border-color: var(--bad); }
+  body.not-live .panel[data-telem] .chip.on { background: var(--stale); border-color: var(--stale); }
+  .turret { display: flex; flex-direction: column; }
+  /* the canvas fills its box (at least 380px tall, taller when the row is): it never sizes the row */
+  .view-wrap { position: relative; flex: 1 1 auto; min-height: 380px; }
+  canvas#view { display: block; position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 8px;
+    background: var(--r-bg); touch-action: none; cursor: grab; }
+  canvas#view:active { cursor: grabbing; }
+  .overlay { position: absolute; left: 10px; top: 8px; font: 12px/1.5 var(--mono); pointer-events: none; }
+  .overlay b { font-size: 15px; }
+  .overlay-r { left: auto; right: 10px; text-align: right; }
+  .view-help { font-size: 12px; margin-top: 6px; display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  button { font: 600 13px var(--sans); padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line);
+    background: var(--panel-2); color: var(--text); cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.danger { background: var(--kb); color: #fff; border-color: var(--kb); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .lcd { display: grid; gap: 2px; padding: 8px; border-radius: 6px; background: var(--lcd-frame); width: 100%; container-type: inline-size; }
+  .lcd-row { display: grid; gap: 2px; }
+  .lcd-cell { aspect-ratio: 2 / 3; display: grid; place-items: center; font: 700 clamp(10px, 4.2cqi, 20px)/1 var(--mono);
+    background: var(--lcd-cell); color: var(--lcd-fg); border-radius: 2px; min-width: 0; }
+  .lcd.backlit .lcd-cell { box-shadow: inset 0 0 6px rgba(255,255,255,0.12); }
+  .lcd.off .lcd-cell { background: #1d2a1d; color: #2e3d2e; }
+  body.not-live .lcd-cell { color: var(--stale); }
+  .ledring { position: relative; width: 150px; height: 150px; margin: 6px auto 0; }
+  .led { position: absolute; width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--line); background: #222; }
+  .display-grid { display: grid; gap: 12px; }
+  .note { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  canvas#stall { display: block; width: 100%; height: 170px; border-radius: 6px; background: var(--panel-2); }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 4px; }
+  .stick-wrap { display: flex; gap: 14px; align-items: center; }
+  canvas#stick { width: 110px; height: 110px; flex: none; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); }
+  .stick-side { flex: 1; min-width: 0; }
+  table.keys { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.keys td { padding: 3px 4px; border-bottom: 1px solid var(--line); }
+  table.keys td:first-child { white-space: nowrap; }
+  kbd { font: 600 11px var(--mono); padding: 2px 5px; border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 4px; background: var(--panel-2); }
+  .kb-status { font-weight: 700; margin: 8px 0; }
+  .kb-status.live { color: var(--kb); } .kb-status.warn { color: var(--warn); }
+  .logs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 900px) { .logs { grid-template-columns: 1fr; } }
+  ol.log { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow: auto; font: 12px/1.45 var(--mono); }
+  ol.log li { display: grid; grid-template-columns: auto auto 1fr; gap: 8px; padding: 2px 0; border-bottom: 1px dashed var(--line); }
+  ol.log time { color: var(--muted); }
+  ol.log .k { font-weight: 700; color: var(--muted); min-width: 64px; }
+  ol.log li[data-kind="safety"] .k, ol.log li[data-kind="safety"] .txt { color: var(--bad); }
+  ol.log li[data-kind="keyboard"] .k { color: var(--kb); }
+  ol.log li[data-kind="input"] .k { color: var(--info); }
+  ol.log li[data-kind="relay"] .k { color: var(--accent); }
+  ol.log li[data-kind="turret"] .k { color: var(--ok); }
+  .txt { overflow-wrap: anywhere; }
+  h3 { font-size: 12px; margin: 0 0 6px; color: var(--muted); font-weight: 600; }
+  /* CONTROLLER panel */
+  .ctrl-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 10px; margin-bottom: 8px; }
+  .ctrl-src { font-weight: 700; overflow-wrap: anywhere; }
+  .ctrl-src small { font-weight: 400; color: var(--muted); }
+  .ctrl-state { font: 600 12px/1.3 var(--mono); color: var(--muted); }
+  .ctrl-state.ok { color: var(--ok); } .ctrl-state.warn { color: var(--warn); } .ctrl-state.bad { color: var(--bad); }
+  .ctrl-sticks { display: flex; justify-content: space-around; gap: 10px; }
+  .ctrl-stick { text-align: center; font: 11px/1.3 var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .ctrl-stick canvas { display: block; width: 92px; height: 92px; margin: 0 auto 2px; border-radius: 50%; }
+  .ctrl-trig { display: grid; grid-template-columns: 24px 1fr 84px; align-items: center; gap: 8px; margin-top: 6px;
+    font: 11px/1.3 var(--mono); font-variant-numeric: tabular-nums; }
+  .ctrl-trig b { color: var(--muted); }
+  .ctrl-trig span.v { text-align: right; color: var(--muted); }
+  .ctrl-lower { display: flex; align-items: center; gap: 14px; margin-top: 10px; }
+  .dpad { display: grid; grid-template-columns: repeat(3, 20px); grid-template-rows: repeat(3, 20px); gap: 2px; flex: none; }
+  .dpad span { border-radius: 4px; background: var(--panel-2); border: 1px solid var(--line); }
+  .dpad span.hub { background: transparent; border-color: transparent; }
+  .dpad span.on { background: var(--accent); border-color: var(--accent); }
+  .cbtns { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; flex: 1; min-width: 0; }
+  .cbtn { font: 700 11px/1 var(--mono); text-align: center; padding: 6px 0; border-radius: 6px; border: 1px solid var(--line);
+    background: var(--panel-2); color: var(--muted); white-space: nowrap; overflow: hidden; }
+  .cbtn.on { color: var(--btn-text); background: var(--accent); border-color: var(--accent); }
+  .cbtn.on[data-key="a"] { background: var(--btn-a); border-color: var(--btn-a); }
+  .cbtn.on[data-key="b"] { background: var(--btn-b); border-color: var(--btn-b); }
+  .cbtn.on[data-key="x"] { background: var(--btn-x); border-color: var(--btn-x); }
+  .cbtn.on[data-key="y"] { background: var(--btn-y); border-color: var(--btn-y); }
+  .ctrl-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 10px; margin-top: 8px; font-size: 12px; }
+  .ctrl-foot .batt { font-family: var(--mono); font-weight: 700; }
+  .ctrl-foot .batt.warn { color: var(--warn); } .ctrl-foot .batt.bad { color: var(--bad); }
+  .ctrl-missing { margin: 0 0 8px; padding: 6px 10px; border-radius: 6px; border: 1px dashed var(--warn); color: var(--warn);
+    font-weight: 700; font-size: 12px; }
+  .panel.ctrl-dim h2 .stamp { display: inline-block; }
+  .panel.ctrl-dim .cbtn.on, .panel.ctrl-dim .dpad span.on { background: var(--stale) !important; border-color: var(--stale) !important; }
+  .panel.ctrl-dim .meter > span { background: var(--stale) !important; }
+  .panel.ctrl-dim .ctrl-state, .panel.ctrl-dim .ctrl-foot .batt { color: var(--stale) !important; }
+  /* CONTROLLER MAP panel */
+  .cmap { display: flex; flex-direction: column; }
+  .cmap-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 10px; margin-bottom: 4px; }
+  .cmap-mode { font-weight: 700; display: inline-flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+  .cmap-mode::before { content: ""; flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--stale); }
+  .cmap-mode.m-ARMED::before { background: var(--armed); } .cmap-mode.m-DISARMED::before { background: var(--ok); }
+  .cmap-mode.m-FAULT::before { background: var(--bad); } .cmap-mode.m-PAIRING::before { background: var(--accent); }
+  .cmap-mode.m-adjust::before { background: var(--info); }
+  .cmap-src { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+  .cmap-wrap { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; min-height: 0; }
+  .cmap-svg { display: block; width: 100%; height: auto; max-height: 470px; }
+  .cmap-svg text { font-family: var(--sans); }
+  .cmap-narrow .cm-labels { display: none; }
+  /* wide: the drawing's own labels show; the list stays for screen readers (the svg is one image to them) */
+  .cmap:not(.cmap-narrow) .cmap-legend { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+  .cm-body { fill: var(--cm-body); stroke: var(--cm-edge); stroke-width: 2.5; }
+  .cm-well { fill: var(--cm-well); stroke: var(--cm-edge); stroke-width: 1.5; }
+  .cm-shape { fill: var(--cm-part); stroke: var(--cm-part-edge); stroke-width: 1.5; stroke-linejoin: round; }
+  .cm-arm { fill: none; }
+  .cm-cap-in { fill: var(--cm-cap-in); }
+  .cm-glyph { fill: var(--cm-glyph); }
+  .cm-glyph-s { fill: none; stroke: var(--cm-glyph); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+  .cm-tag { fill: var(--cm-glyph); font-size: 13px; font-weight: 800; letter-spacing: 0.04em; text-anchor: middle; }
+  .cm-halo { fill: var(--cm-halo); stroke: var(--cm-halo); stroke-width: 14; stroke-linejoin: round; opacity: 0; }
+  circle.cm-halo { stroke: none; }
+  .cm-halo.on, .cm-ctl.on > .cm-halo { opacity: 0.42; }
+  .cm-btn.on > .cm-shape, .cm-bump.on > .cm-shape, .cm-btn.on > .cm-arm { fill: var(--cm-lit); }
+  .cm-btn.on > .cm-glyph, .cm-bump.on > .cm-tag { fill: var(--cm-lit-fg); }
+  .cm-btn.on > .cm-glyph-s { stroke: var(--cm-lit-fg); }
+  .cm-fill { fill: var(--cm-lit); }
+  .cm-mark-u { stroke: var(--cm-mark-u); stroke-width: 4.5; }
+  .cm-mark-o { stroke: var(--cm-mark-o); stroke-width: 1.8; }
+  .cm-face[data-cm="a"] { --cm-face: var(--cm-a); } .cm-face[data-cm="b"] { --cm-face: var(--cm-b); }
+  .cm-face[data-cm="x"] { --cm-face: var(--cm-x); } .cm-face[data-cm="y"] { --cm-face: var(--cm-y); }
+  .cm-face > .cm-halo { fill: var(--cm-face); }
+  .cm-disc { fill: var(--cm-part); stroke: var(--cm-face); stroke-width: 2; }
+  .cm-letter { fill: var(--cm-face); font-size: 19px; font-weight: 800; text-anchor: middle; }
+  .cm-face.on > .cm-disc { fill: var(--cm-face); stroke: var(--cm-part); }
+  .cm-face.on > .cm-letter { fill: var(--cm-on-fg); }
+  .cm-rim { fill: none; stroke: var(--cm-lit); stroke-width: 4; opacity: 0; }
+  .cm-rim.on { opacity: 1; }
+  .cm-dead { fill: none; stroke: var(--cm-dead); stroke-width: 1.5; }
+  .cm-dot { fill: var(--cm-dot); stroke: var(--cm-part); stroke-width: 1.5; }
+  .cm-stick.on > .cm-dot { fill: var(--cm-dot-lit); }
+  .cm-lead { fill: none; stroke: var(--cm-leader); stroke-width: 1.5; }
+  .cm-tip { fill: var(--cm-leader); }
+  .cm-name { fill: var(--muted); font-size: 17px; font-weight: 700; letter-spacing: 0.06em; }
+  .cm-act { fill: var(--text); font-size: 22px; font-weight: 600; }
+  .cm-det { fill: var(--muted); font-size: 17px; }
+  .cm-lab[data-cm="a"] .cm-name { fill: var(--cm-ink-a); } .cm-lab[data-cm="b"] .cm-name { fill: var(--cm-ink-b); }
+  .cm-lab[data-cm="x"] .cm-name { fill: var(--cm-ink-x); } .cm-lab[data-cm="y"] .cm-name { fill: var(--cm-ink-y); }
+  .cm-lab.unused .cm-act, .cm-lab.refused .cm-act { fill: var(--muted); font-weight: 400; }
+  .cm-lab.unused .cm-lead { stroke-dasharray: 2 4; }
+  .cm-lab.refused .cm-lead { stroke-dasharray: 7 4; }
+  .cm-lab.on .cm-lead { stroke: var(--cm-lit); stroke-width: 2.5; }
+  .cm-lab.on .cm-tip { fill: var(--cm-lit); }
+  .cm-lab.on .cm-act { fill: var(--cm-lit); font-weight: 700; }
+  .cm-lab.on.unused .cm-act, .cm-lab.on.refused .cm-act { fill: var(--text); }
+  .cm-det.on { fill: var(--cm-lit); font-weight: 700; }
+  .cmap-legend { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+  .cmap-legend li { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; align-items: baseline; }
+  .cmap-legend .k { justify-self: start; font: 700 11px/1.6 var(--mono); padding: 0 6px; border-radius: 5px;
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--muted); white-space: nowrap; }
+  .cmap-legend .k[data-cm="a"] { color: var(--cm-ink-a); } .cmap-legend .k[data-cm="b"] { color: var(--cm-ink-b); }
+  .cmap-legend .k[data-cm="x"] { color: var(--cm-ink-x); } .cmap-legend .k[data-cm="y"] { color: var(--cm-ink-y); }
+  .cmap-legend .k.on { background: var(--cm-lit); border-color: var(--cm-lit); color: var(--cm-lit-fg); }
+  .cmap-legend .t { overflow-wrap: anywhere; }
+  .cmap-legend li.refused .t, .cmap-legend li.unused .t { color: var(--muted); }
+  .cmap-legend li.refused .t { font-style: italic; }
+  .cmap-legend li.on .t { color: var(--cm-lit); font-weight: 700; }
+  .cmap-legend .none { color: var(--muted); font-size: 12px; }
+  .cmap-legend .cm-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .panel.cmap-dim h2 .stamp { display: inline-block; }
+  .panel.cmap-dim { --cm-lit: var(--stale); --cm-halo: var(--stale); --cm-dot-lit: var(--stale); --cm-a: var(--stale);
+    --cm-b: var(--stale); --cm-x: var(--stale); --cm-y: var(--stale); --cm-ink-a: var(--muted); --cm-ink-b: var(--muted);
+    --cm-ink-x: var(--muted); --cm-ink-y: var(--muted); }
+  .panel.cmap-dim .cm-draw { opacity: 0.6; }
+  .panel.cmap-dim .cm-lab.on .cm-act, .panel.cmap-dim .cmap-legend li.on .t { fill: var(--stale); color: var(--stale); }
+  .panel.cmap-dim .cmap-mode { color: var(--stale); }
+  @media (prefers-reduced-motion: no-preference) {
+    .cm-halo, .cm-rim { transition: opacity 90ms ease-out; }
+    .cm-shape, .cm-arm, .cm-disc, .cm-letter, .cm-act, .cm-lead, .cm-tip { transition: fill 90ms ease-out, stroke 90ms ease-out; }
+  }
+</style>
+</head>
+<body>
+<div id="kbBanner" class="kb-banner" hidden>KEYBOARD LIVE<small id="kbBannerSub">Keys in this tab drive the turret. Esc = panic (neutral, keyboard off).</small></div>
+<header>
+  <h1>D-Sentry</h1>
+  <span id="pillServer" class="pill"><span class="dot"></span><span>relay: connecting</span></span>
+  <span id="pillTelem" class="pill"><span class="dot"></span><span>telemetry: none</span></span>
+  <span id="pillState" class="pill"><span class="dot"></span><span>state: -</span></span>
+  <span id="pillDemo" class="pill badge-demo" hidden>DEMO: Python stand-in turret</span>
+  <span class="grow"></span>
+  <span id="hdrMode" class="muted"></span>
+</header>
+<div id="notice" class="notice" hidden></div>
+
+<main>
+  <div class="top-row">
+  <section class="panel turret" data-telem>
+    <h2>Turret <span class="stamp">STALE</span></h2>
+    <div class="view-wrap">
+      <canvas id="view" aria-label="3D view of the turret, drag to orbit, wheel to zoom"></canvas>
+      <div class="overlay">pan <b id="ovPan" class="tv">-</b><br>tilt <b id="ovTilt" class="tv">-</b></div>
+      <div class="overlay overlay-r">home <span id="ovHome" class="tv">-</span><br><span id="ovLimits"></span></div>
+    </div>
+    <div class="view-help muted"><span>Drag to orbit, wheel to zoom, double-click to reset. Dashed blue: home. Green arcs: allowed travel; red ticks: limits.</span>
+      <button id="btnView" type="button">Reset view</button></div>
+  </section>
+
+  <section class="panel cmap cmap-dim" id="cmapPanel" aria-label="controller map: what each pad control does on this turret">
+    <h2>Controller map <span class="stamp">STALE</span></h2>
+    <div class="cmap-head"><span id="cmapMode" class="cmap-mode">-</span><span id="cmapSource" class="cmap-src"></span></div>
+    <div id="cmapWrap" class="cmap-wrap">
+      <svg id="cmapSvg" class="cmap-svg" viewBox="-510 -154 1062 516" role="img" aria-labelledby="cmapTitle">
+        <title id="cmapTitle">Xbox Wireless Controller from the front, each control labelled with what it does on this turret; a held control lights up</title>
+      </svg>
+    </div>
+    <ul id="cmapLegend" class="cmap-legend" aria-label="what each control does"></ul>
+    <div id="cmapNote" class="note"></div>
+  </section>
+  </div>
+
+  <section class="panel" data-telem>
+    <h2>State <span class="stamp">STALE</span></h2>
+    <div class="state-row"><span id="stState" class="big tv">-</span><span id="stMode" class="tv" style="font-weight:700">-</span></div>
+    <dl class="kv">
+      <dt>Fault</dt><dd id="stFault" class="tv">-</dd>
+      <dt>Ammo</dt><dd id="stAmmo" class="tv">-</dd>
+    </dl>
+    <div id="stPips" class="pips"></div>
+    <dl class="kv">
+      <dt>Flywheel</dt><dd id="stFly" class="tv">-</dd>
+    </dl>
+    <div class="meter" style="margin:4px 0 8px"><span id="stFlyBar"></span></div>
+    <dl class="kv">
+      <dt>Trigger</dt><dd id="stTrig" class="tv">-</dd>
+      <dt>Servo</dt><dd id="stServo" class="tv">-</dd>
+      <dt>Shots since boot</dt><dd id="stShots" class="tv">-</dd>
+      <dt>Homing</dt><dd id="stHoming" class="tv">-</dd>
+    </dl>
+  </section>
+
+  <section class="panel" id="ctrlPanel" data-ctrl aria-label="game controller state">
+    <h2>Controller <span class="stamp">STALE</span></h2>
+    <div class="ctrl-head"><span id="ctrlSource" class="ctrl-src">-</span><span id="ctrlState" class="ctrl-state">-</span></div>
+    <div id="ctrlMissing" class="ctrl-missing" hidden></div>
+    <div class="ctrl-sticks">
+      <div class="ctrl-stick"><canvas id="ctrlStickL" width="92" height="92" aria-label="left stick"></canvas><span id="ctrlStickLText">L -</span></div>
+      <div class="ctrl-stick"><canvas id="ctrlStickR" width="92" height="92" aria-label="right stick"></canvas><span id="ctrlStickRText">R -</span></div>
+    </div>
+    <div class="ctrl-trig"><b>LT</b><div class="meter"><span id="ctrlLt"></span></div><span id="ctrlLtText" class="v">-</span></div>
+    <div class="ctrl-trig"><b>RT</b><div class="meter"><span id="ctrlRt"></span><i id="ctrlRtPress" class="mark" title="TRIGGER_PRESS_THRESHOLD"></i><i id="ctrlRtRelease" class="mark" title="TRIGGER_RELEASE_THRESHOLD"></i></div><span id="ctrlRtText" class="v">-</span></div>
+    <div class="ctrl-lower">
+      <div id="ctrlDpad" class="dpad" aria-label="d-pad">
+        <span class="hub"></span><span data-key="dpadUp"></span><span class="hub"></span>
+        <span data-key="dpadLeft"></span><span class="hub"></span><span data-key="dpadRight"></span>
+        <span class="hub"></span><span data-key="dpadDown"></span><span class="hub"></span>
+      </div>
+      <div id="ctrlButtons" class="cbtns" aria-label="buttons"></div>
+    </div>
+    <div class="ctrl-foot"><span id="ctrlBattery" class="batt">battery -</span><span id="ctrlNote" class="muted"></span></div>
+  </section>
+
+  <section class="panel" data-telem>
+    <h2>LCD and LEDs <span class="stamp">STALE</span></h2>
+    <div class="display-grid">
+      <div><div id="lcd" class="lcd backlit"></div><div id="lcdNote" class="note"></div></div>
+      <div><div id="ledRing" class="ledring"></div><div id="ledNote" class="note" style="text-align:center"></div></div>
+    </div>
+  </section>
+
+  <section class="panel" data-telem>
+    <h2>Motion <span class="stamp">STALE</span></h2>
+    <dl class="kv">
+      <dt>Pan</dt><dd id="mPan" class="tv">-</dd>
+      <dt>Pan velocity</dt><dd id="mPanV" class="tv">-</dd>
+      <dt>Tilt</dt><dd id="mTilt" class="tv">-</dd>
+      <dt>Tilt velocity</dt><dd id="mTiltV" class="tv">-</dd>
+      <dt>Home</dt><dd id="mHome" class="tv">-</dd>
+      <dt>Pan limits</dt><dd id="mPanLim">-</dd>
+      <dt>Tilt range</dt><dd id="mTiltLim">-</dd>
+    </dl>
+    <div class="note">Tilt within its range</div>
+    <div class="meter"><span id="mTiltBar"></span><i id="mTiltHome" class="mark"></i></div>
+  </section>
+
+  <section class="panel" data-relay>
+    <h2>Link and latency <span class="stamp">STALE</span></h2>
+    <dl class="kv">
+      <dt>Relay link</dt><dd id="lTransport">-</dd>
+      <dt>Relay sends</dt><dd id="lTx">-</dd>
+      <dt>Telemetry in</dt><dd id="lRx">-</dd>
+      <dt>Round trip (lastCtrlSeq)</dt><dd id="lLat">-</dd>
+      <dt>Relay-side CRC errors</dt><dd id="lRelayCrc">-</dd>
+      <dt>Turret source</dt><dd id="lSource" class="tv">-</dd>
+      <dt>Turret control rate</dt><dd id="lCtrlHz" class="tv">-</dd>
+      <dt>Turret CRC errors</dt><dd id="lCrc" class="tv">-</dd>
+      <dt>Turret seq gaps</dt><dd id="lGaps" class="tv">-</dd>
+      <dt>ESP32 radio</dt><dd id="lEsp" class="tv">-</dd>
+      <dt>Status / rumble</dt><dd id="lStatus">-</dd>
+    </dl>
+  </section>
+
+  <section class="panel" data-telem>
+    <h2>Health <span class="stamp">STALE</span></h2>
+    <dl class="kv">
+      <dt>Loop rate</dt><dd id="hLoop" class="tv">-</dd>
+      <dt>Step jitter</dt><dd id="hJitter" class="tv">-</dd>
+      <dt>RA4M1 uptime</dt><dd id="hUptime" class="tv">-</dd>
+      <dt>Telemetry seq</dt><dd id="hSeq" class="tv">-</dd>
+    </dl>
+    <div id="hFlags" class="chips" style="margin-top:8px"></div>
+  </section>
+
+  <section class="panel" data-telem>
+    <h2>Stall sensor (A2) <span class="stamp">STALE</span></h2>
+    <canvas id="stall" aria-label="stall sensor sample and baseline over the last seconds"></canvas>
+    <div class="legend"><span><i style="background:var(--g-sample)"></i>sample</span><span><i style="background:var(--g-base)"></i>baseline</span>
+      <span><i style="background:var(--g-band-line)"></i>baseline +- STALL_DELTA_COUNTS</span></div>
+    <dl class="kv" style="margin-top:6px"><dt>Now / baseline / peak</dt><dd id="sNow" class="tv">-</dd></dl>
+  </section>
+
+  <section class="panel" data-relay>
+    <h2>Input being sent <span class="stamp">STALE</span></h2>
+    <div class="stick-wrap">
+      <canvas id="stick" width="110" height="110" aria-label="right stick being sent"></canvas>
+      <div class="stick-side">
+        <dl class="kv">
+          <dt>Source</dt><dd id="iSource">-</dd>
+          <dt>rx / ry</dt><dd id="iStick">-</dd>
+          <dt>Trigger</dt><dd id="iRt">-</dd>
+          <dt>Seq</dt><dd id="iSeq">-</dd>
+        </dl>
+        <div class="meter" style="margin-top:6px"><span id="iRtBar"></span><i id="iRtPress" class="mark"></i><i id="iRtRelease" class="mark"></i></div>
+      </div>
+    </div>
+    <div id="iButtons" class="chips" style="margin-top:10px"></div>
+    <div id="iFlags" class="chips" style="margin-top:6px"></div>
+    <div id="iPad" class="note"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Keyboard control</h2>
+    <div><button id="btnKb" type="button" class="primary">Enable keyboard</button></div>
+    <div id="kbStatus" class="kb-status">Off. Keyboard control is off at every relay start.</div>
+    <table class="keys" id="kbKeys"></table>
+    <div id="kbNote" class="note"></div>
+  </section>
+
+  <section class="panel span2">
+    <h2>Events</h2>
+    <div class="logs">
+      <div><h3>From telemetry changes and the relay</h3><ol id="log" class="log"></ol></div>
+      <div><h3>RA4M1 text</h3><ol id="text" class="log"></ol></div>
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+// ---- presentation constants (not tunables) ------------------------------------------------
+const QUIET_FACTOR = 2.5;          // no SSE event for keepalive x this -> the relay is not responding
+const RESTART_EVERY_MS = 5000;     // a fresh EventSource this often while not responding
+const WATCHDOG_MS = 250;
+const STALL_GRAPH_S = 10;          // seconds of stall samples shown
+const STALL_GAP_S = 0.5;           // a hole longer than this breaks the graph line
+const STALL_MIN_SPAN_FACTOR = 1.5; // y range at least baseline +- delta x this
+const LED_RING_RADIUS = 58;        // px
+const LED_SIZE = 26;
+const STICK_PX = 110;
+const STALL_REDRAW_HZ = 10;        // the graph scrolls even between telemetry frames
+const KEY_LABELS = {ArrowUp: "\u2191", ArrowDown: "\u2193", ArrowLeft: "\u2190", ArrowRight: "\u2192",
+  ShiftLeft: "Shift", ShiftRight: "Shift R", Escape: "Esc", NumpadEnter: "Num Enter", Space: "Space", Enter: "Enter"};
+const BUTTON_LABELS = {a: "A", b: "B", x: "X", y: "Y", lb: "LB", rb: "RB", dpadUp: "UP", dpadDown: "DOWN",
+  dpadLeft: "LEFT", dpadRight: "RIGHT", start: "START", back: "BACK", lsClick: "LS", rsClick: "RS",
+  xbox: "XBOX", share: "SHARE"};
+// CONTROLLER panel: the button grid in pad order (bit keys from protocol_spec.py Buttons)
+const CTRL_BUTTONS = [["a", "A"], ["b", "B"], ["x", "X"], ["y", "Y"], ["lb", "LB"], ["rb", "RB"],
+  ["back", "View"], ["start", "Menu"], ["xbox", "Xbox"], ["lsClick", "LS"], ["rsClick", "RS"], ["share", "Share"]];
+const CTRL_STICK_PX = 92;
+const CTRL_STICK_RIM_PX = 5;       // travel circle inset from the canvas edge
+const CTRL_DOT_PX = 7;             // stick dot radius
+const CTRL_CLICK_RIM_PX = 3;       // rim width while the stick is clicked
+const CTRL_BATTERY_LOW = 20;       // percent: shown in the bad colour at or below
+const CTRL_BATTERY_WARN = 40;      // percent: shown in the warn colour at or below
+const FLAG_LABELS = {linkConnected: "link", flywheelOn: "flywheel", flywheelReady: "spun up", strokeActive: "stroke",
+  triggerPulled: "trigger", homing: "homing", calibrated: "calibrated", powerToggleOn: "power on",
+  modeToggleWifi: "WiFi toggle", stallEnabled: "stall det.", emptyMagBlink: "empty mag", driversEnabled: "drivers",
+  espLegacyFirmware: "ESP32 legacy", lcdPresent: "LCD", espAlive: "ESP32 alive"};
+const BAD_FLAGS = new Set(["emptyMagBlink", "espLegacyFirmware"]);
+
+const $ = (id) => document.getElementById(id);
+const S = { conf: null, boot: null, frame: null, serverUp: false, frozen: false, lastHeard: 0,
+  lastRestart: 0, source: null, live: false, stall: [] };
+
+function cfg(name) { return S.conf ? S.conf.config[name] : undefined; }
+function fmt(v, digits) { return (v === null || v === undefined || Number.isNaN(v)) ? "-" : Number(v).toFixed(digits); }
+function setText(id, text) { const el = $(id); if (el.textContent !== text) el.textContent = text; }
+function clock(t) { return new Date(t * 1000).toLocaleTimeString([], {hour12: false}); }
+
+// ---- static parts built from /config ---------------------------------------------------------
+function buildStatic() {
+  const c = S.conf.config;
+  // ammo pips
+  const pips = $("stPips"); pips.textContent = "";
+  for (let i = 0; i < c.MAG_CAPACITY; i++) { const p = document.createElement("span"); p.className = "pip"; pips.append(p); }
+  // LCD cells
+  const lcd = $("lcd"); lcd.textContent = "";
+  for (let r = 0; r < c.LCD_ROWS; r++) {
+    const row = document.createElement("div"); row.className = "lcd-row";
+    row.style.gridTemplateColumns = `repeat(${c.LCD_COLS}, minmax(0, 1fr))`;
+    for (let k = 0; k < c.LCD_COLS; k++) { const cell = document.createElement("span"); cell.className = "lcd-cell"; cell.textContent = " "; row.append(cell); }
+    lcd.append(row);
+  }
+  // LED ring
+  const ring = $("ledRing"); ring.textContent = "";
+  const centre = (parseFloat(getComputedStyle(ring).width) || 2 * LED_RING_RADIUS + LED_SIZE) / 2;
+  for (let i = 0; i < c.LED_COUNT; i++) {
+    const a = 2 * Math.PI * i / c.LED_COUNT - Math.PI / 2;
+    const led = document.createElement("span"); led.className = "led";
+    led.style.left = (centre + LED_RING_RADIUS * Math.cos(a) - LED_SIZE / 2) + "px";
+    led.style.top = (centre + LED_RING_RADIUS * Math.sin(a) - LED_SIZE / 2) + "px";
+    ring.append(led);
+  }
+  // flag chips
+  const flags = $("hFlags"); flags.textContent = "";
+  for (const [key] of S.conf.bits.TelemetryFlags) {
+    const ch = document.createElement("span"); ch.className = "chip"; ch.dataset.key = key; ch.textContent = FLAG_LABELS[key] || key; flags.append(ch);
+  }
+  const btns = $("iButtons"); btns.textContent = "";
+  for (const [key] of S.conf.bits.Buttons) {
+    const ch = document.createElement("span"); ch.className = "chip"; ch.dataset.key = key; ch.textContent = BUTTON_LABELS[key] || key; btns.append(ch);
+  }
+  const iflags = $("iFlags"); iflags.textContent = "";
+  for (const [key] of S.conf.bits.ControlFlags) {
+    const ch = document.createElement("span"); ch.className = "chip"; ch.dataset.key = key; ch.textContent = key; iflags.append(ch);
+  }
+  // limits text
+  setText("mPanLim", c.PAN_LIMITS_ENABLED ? `${fmt(c.PAN_MIN_DEG, 0)} .. ${fmt(c.PAN_MAX_DEG, 0)} deg` : "none (PAN_LIMITS_ENABLED false)");
+  setText("mTiltLim", `0 .. ${fmt(c.TILT_RANGE_DEG, 0)} deg`);
+  setText("ovLimits", c.PAN_LIMITS_ENABLED ? `pan ${fmt(c.PAN_MIN_DEG, 0)}..${fmt(c.PAN_MAX_DEG, 0)} deg` : "pan: no limits");
+  // trigger threshold marks
+  $("iRtPress").style.left = (c.TRIGGER_PRESS_THRESHOLD * 100) + "%";
+  $("iRtRelease").style.left = (c.TRIGGER_RELEASE_THRESHOLD * 100) + "%";
+  // CONTROLLER panel: button grid, RT hysteresis marks (the turret's pull / release points)
+  const cb = $("ctrlButtons"); cb.textContent = "";
+  for (const [key, label] of CTRL_BUTTONS) {
+    const b = document.createElement("span"); b.className = "cbtn"; b.dataset.key = key; b.textContent = label; cb.append(b);
+  }
+  $("ctrlRtPress").style.left = (c.TRIGGER_PRESS_THRESHOLD * 100) + "%";
+  $("ctrlRtRelease").style.left = (c.TRIGGER_RELEASE_THRESHOLD * 100) + "%";
+  $("ctrlRtPress").title = `pulled above ${Math.round(c.TRIGGER_PRESS_THRESHOLD * 100)} % (TRIGGER_PRESS_THRESHOLD)`;
+  $("ctrlRtRelease").title = `released below ${Math.round(c.TRIGGER_RELEASE_THRESHOLD * 100)} % (TRIGGER_RELEASE_THRESHOLD)`;
+  // keyboard key map
+  const t = $("kbKeys"); t.textContent = "";
+  for (const k of S.conf.keys) {
+    const tr = document.createElement("tr");
+    const a = document.createElement("td"), b = document.createElement("td");
+    for (const code of k.codes) { const kb = document.createElement("kbd"); kb.textContent = keyLabel(code); a.append(kb, " "); }
+    b.textContent = k.action; tr.append(a, b); t.append(tr);
+  }
+  setText("kbNote", `A key alone deflects the stick ${Math.round(c.KEYBOARD_DEFLECTION * 100)} %; with Shift 100 %. ` +
+    `Taps are held ${c.KEYBOARD_PRESS_MS} ms so the turret sees them. The relay goes neutral after ${c.LINK_TIMEOUT_MS} ms ` +
+    `without key state from this tab and switches keyboard control off after ${c.KEYBOARD_REVOKE_MS} ms. ` +
+    `Leaving the tab, Cmd, or Esc releases every key. A connected pad locks the keyboard out.`);
+  KB.codeMap = {};
+  for (const k of S.conf.keys) for (const code of k.codes) KB.codeMap[code] = k.key;
+  updateKbUi();
+  setText("hdrMode", "");
+  $("pillDemo").hidden = !S.conf.demo;
+  buildCmap();
+  R3.redraw();                    // grid, limit arcs and "NO TELEMETRY" before any pose arrives
+}
+function keyLabel(code) { return KEY_LABELS[code] || code.replace(/^Key/, ""); }
+
+// ---- frame rendering -------------------------------------------------------------------------
+function onFrame(f) {            // a new frame from the relay
+  if (!S.conf) return;
+  if (S.boot !== null && f.boot !== S.boot) { relayRestarted(); return; }
+  S.boot = f.boot;
+  S.frame = f;
+  appendLog(f.log || []);
+  appendText(f.text || []);
+  render();
+}
+function render() {               // the latest frame again (also after the relay's state changes)
+  const f = S.frame;
+  if (!f) { updatePills(); return; }
+  S.live = f.telemetryState === "live" && S.serverUp && !S.frozen;
+  renderHeader(f);
+  renderTelemetry(f);
+  renderLink(f);
+  renderInput(f);
+  renderController(f);
+  renderCmap(f);
+  updateKbUi();
+  updatePills();
+}
+
+function relayRestarted() {
+  // A new relay process: new keyboard token, fresh logs.
+  S.boot = null; S.frame = null; S.stall = [];
+  $("log").textContent = ""; $("text").textContent = "";
+  kbOff("the relay restarted; enable the keyboard again");
+  loadConfig();
+}
+
+function renderHeader(f) {
+  const t = f.telemetry;
+  const pillT = $("pillTelem");
+  const word = {live: "live", stale: "STALE", none: "NO TELEMETRY", badVersion: "VERSION MISMATCH"}[f.telemetryState] || f.telemetryState;
+  pillT.className = "pill " + (f.telemetryState === "live" ? "ok" : f.telemetryState === "stale" ? "warn" : "bad");
+  pillT.lastElementChild.textContent = "telemetry: " + word + (f.telemetryState === "stale" ? ` (${fmt(f.telemetryAgeMs / 1000, 1)} s old)` : "");
+  const pillS = $("pillState");
+  pillS.className = "pill " + (!t ? "" : t.stateName === "FAULT" ? "bad" : t.stateName === "ARMED" ? "warn" : "ok");
+  pillS.lastElementChild.textContent = "state: " + (t ? t.stateName : "-");
+  setText("hdrMode", `mode ${f.mode}: ${f.relay.transport.detail || ""}`);
+  const notice = $("notice");
+  let msg = "", warn = false;
+  if (!S.serverUp || S.frozen) msg = "RELAY NOT RESPONDING: nothing on this page is live.";
+  else if (f.telemetryState === "none") msg = "NO TELEMETRY yet from the turret: no turret value is shown.";
+  else if (f.telemetryState === "stale") msg = `TELEMETRY STALE: last packet ${fmt(f.telemetryAgeMs / 1000, 1)} s ago. Greyed values are not live.`;
+  else if (f.telemetryState === "badVersion") msg = "TELEMETRY VERSION MISMATCH: the turret sends a TelemetryPacket version this relay does not understand; values ignored.";
+  else if (f.demo) { msg = "DEMO MODE: the turret here is a small Python stand-in, not the RA4M1 firmware."; warn = true; }
+  notice.hidden = !msg; notice.textContent = msg; notice.classList.toggle("warn", warn);
+  setLiveClasses(f.telemetryState);
+}
+
+function renderTelemetry(f) {
+  const t = f.telemetry, c = S.conf.config;
+  const none = !t || f.telemetryState === "none" || f.telemetryState === "badVersion";
+  const v = (id, text) => setText(id, none ? "-" : text);
+  if (none) { R3.setPose(null); }
+  if (!none) {
+    R3.setPose({pan: t.panDeg, tilt: t.tiltDeg, homePan: t.homePanDeg, homeTilt: t.homeTiltDeg, live: S.live});
+  }
+  v("ovPan", t ? `${fmt(t.panDeg, 1)} deg` : "-");
+  v("ovTilt", t ? `${fmt(t.tiltDeg, 1)} deg` : "-");
+  v("ovHome", t ? `${fmt(t.homePanDeg, 1)} / ${fmt(t.homeTiltDeg, 1)} deg` : "-");
+  const st = $("stState");
+  v("stState", t ? t.stateName : "-");
+  st.className = "big tv" + (t && !none ? " st-" + t.stateName : "");
+  v("stMode", t ? (t.fireModeName === "FULL" ? "FULL AUTO" : "SEMI") : "-");
+  v("stFault", t ? t.faultName : "-");
+  v("stAmmo", t ? `${t.ammo} / ${t.magCapacity}` : "-");
+  const pips = $("stPips").children;
+  for (let i = 0; i < pips.length; i++) pips[i].classList.toggle("on", !none && i < t.ammo);
+  if (none) { $("stFlyBar").style.width = "0"; }
+  if (t && !none) {
+    const fb = t.flagBits;
+    v("stFly", `${fb.flywheelOn ? (fb.flywheelReady ? "on, spun up" : "on, spinning up") : "off"}  duty ${t.flywheelDuty}/${c.PWM_MAX}`);
+    $("stFlyBar").style.width = (100 * t.flywheelDuty / c.PWM_MAX) + "%";
+    v("stTrig", `${fb.triggerPulled ? "pulled" : "released"}${fb.strokeActive ? ", stroke running" : ""}${fb.emptyMagBlink ? ", EMPTY: locked out" : ""}`);
+    v("stServo", `${t.servoDeg} deg (${t.servoDeg === c.TRIGGER_FIRE_ANGLE ? "fire" : t.servoDeg === c.TRIGGER_REST_ANGLE ? "rest" : "moving"})`);
+    v("stShots", String(t.shotsTotal));
+    v("stHoming", fb.homing ? "going home" : "no");
+    // LCD
+    const rows = $("lcd").children;
+    for (let r = 0; r < rows.length; r++) {
+      const text = (t.lcdRows[r] || "");
+      const cells = rows[r].children;
+      for (let k = 0; k < cells.length; k++) { const ch = text[k] || " "; if (cells[k].textContent !== ch) cells[k].textContent = ch; }
+    }
+    $("lcd").classList.toggle("off", t.stateName === "OFF");
+    setText("lcdNote", fb.lcdPresent ? "As rendered by the RA4M1." : "No LCD answered on I2C; this is the text the RA4M1 would show.");
+    // LEDs: LED 0 as sent (after the brightness clamp), shown scaled up to full so the colour is visible
+    const scale = c.LED_CHANNEL_MAX / c.LED_MAX_BRIGHTNESS;
+    const rgb = [t.ledR, t.ledG, t.ledB].map((x) => Math.min(255, Math.round(x * scale)));
+    const off = t.ledR + t.ledG + t.ledB === 0;
+    for (const led of $("ledRing").children) {
+      led.style.background = off ? "#222" : `rgb(${rgb.join(",")})`;
+      led.style.boxShadow = off || !S.live ? "none" : `0 0 12px rgb(${rgb.join(",")})`;
+      led.style.opacity = S.live ? "1" : "0.35";
+    }
+    setText("ledNote", `LED 0 as sent: ${t.ledR}, ${t.ledG}, ${t.ledB} (max ${c.LED_MAX_BRIGHTNESS}); all ${c.LED_COUNT} show one colour`);
+    // motion
+    v("mPan", `${fmt(t.panDeg, 2)} deg`);
+    v("mPanV", `${fmt(t.panVelDegS, 1)} deg/s`);
+    v("mTilt", `${fmt(t.tiltDeg, 2)} deg${fb.calibrated ? "" : " (not calibrated)"}`);
+    v("mTiltV", `${fmt(t.tiltVelDegS, 1)} deg/s`);
+    v("mHome", `pan ${fmt(t.homePanDeg, 2)}, tilt ${fmt(t.homeTiltDeg, 2)} deg`);
+    const range = c.TILT_RANGE_DEG;
+    $("mTiltBar").style.width = Math.max(0, Math.min(100, 100 * t.tiltDeg / range)) + "%";
+    $("mTiltHome").style.left = Math.max(0, Math.min(100, 100 * t.homeTiltDeg / range)) + "%";
+    // health
+    v("hLoop", `${t.loopHz} Hz`);
+    const jl = c.STEP_JITTER_LIMIT_PERMILLE;
+    v("hJitter", `${fmt(t.stepJitterPermille / c.PERMILLE * 100, 1)} % (limit ${fmt(jl / c.PERMILLE * 100, 0)} %)`);
+    $("hJitter").style.color = t.stepJitterPermille > jl ? "var(--bad)" : "";
+    v("hUptime", `${fmt(t.uptimeMs / 1000, 1)} s`);
+    v("hSeq", `${t.seq}  (relay lost ${f.relay.telemetryLost})`);
+    for (const ch of $("hFlags").children) {
+      const on = !!fb[ch.dataset.key]; ch.classList.toggle("on", on); ch.classList.toggle("bad", on && BAD_FLAGS.has(ch.dataset.key));
+    }
+    // stall
+    v("sNow", `${t.stallSample} / ${t.stallBaseline} / ${t.stallPeak} counts`);
+    if (S.live) pushStall(t);
+  } else {
+    for (const id of ["stFly", "stTrig", "stServo", "stShots", "stHoming", "mPan", "mPanV", "mTilt", "mTiltV", "mHome",
+                      "hLoop", "hJitter", "hUptime", "hSeq", "sNow"]) setText(id, "-");
+    for (const ch of $("hFlags").children) ch.classList.remove("on", "bad");
+    for (const row of $("lcd").children) for (const cell of row.children) cell.textContent = " ";
+    for (const led of $("ledRing").children) { led.style.background = "#222"; led.style.boxShadow = "none"; }
+    setText("ledNote", ""); setText("lcdNote", "");
+  }
+  drawStall();
+}
+
+function renderLink(f) {
+  const r = f.relay, t = f.telemetry, none = !t || f.telemetryState === "none" || f.telemetryState === "badVersion";
+  setText("lTransport", `${r.transport.detail || f.mode}${r.transport.up ? "" : "  (down)"}`);
+  setText("lTx", r.transport.sends ? `${fmt(r.txHz, 1)}/s of ${cfg("CONTROL_PACKET_HZ")}, ${r.txFailed} failed` : "nothing (monitor: read only)");
+  setText("lRx", `${fmt(r.telemetryHz, 1)}/s telem, ${fmt(r.statusHz, 1)}/s status`);
+  setText("lLat", r.latencyMs === null || r.latencyMs === undefined ? "-" : `${fmt(r.latencyMs, 1)} ms (max ${fmt(r.latencyMaxMs, 1)})`);
+  setText("lRelayCrc", String(r.relayCrcErrors));
+  setText("lSource", none ? "-" : t.linkSourceName + (t.flagBits.linkConnected ? ", connected" : ", NOT connected"));
+  setText("lCtrlHz", none ? "-" : `${t.ctrlRxHz} /s`);
+  setText("lCrc", none ? "-" : String(t.crcErrors));
+  setText("lGaps", none ? "-" : String(t.seqGaps));
+  setText("lEsp", none ? "-" : t.espModeName + (t.flagBits.espAlive ? "" : " (silent)") + (t.flagBits.espLegacyFirmware ? ", legacy firmware" : ""));
+  const s = f.status;
+  setText("lStatus", s ? `want ${s.wantModeName}, rumble #${s.rumbleSeq}, ${r.rumbleCommands} played` : "-");
+}
+
+function renderInput(f) {
+  const i = f.input;
+  const ctx = $("stick").getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const cv = $("stick");
+  if (cv.width !== Math.round(STICK_PX * dpr)) { cv.width = Math.round(STICK_PX * dpr); cv.height = Math.round(STICK_PX * dpr); }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, STICK_PX, STICK_PX);
+  const css = getComputedStyle(document.documentElement);
+  const half = STICK_PX / 2, range = cfg("JOY_AXIS_RANGE");
+  ctx.strokeStyle = css.getPropertyValue("--line"); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(half, 4); ctx.lineTo(half, STICK_PX - 4); ctx.moveTo(4, half); ctx.lineTo(STICK_PX - 4, half); ctx.stroke();
+  ctx.beginPath(); ctx.arc(half, half, (half - 6) * cfg("JOY_DEADZONE"), 0, 2 * Math.PI); ctx.stroke();
+  if (!i) { setText("iSource", "not sending (monitor)"); setText("iStick", "-"); setText("iRt", "-"); setText("iSeq", "-"); return; }
+  const x = half + (half - 6) * i.rx / range, y = half + (half - 6) * i.ry / range;   // wire: up negative = screen up
+  ctx.fillStyle = i.flagBits.connected ? css.getPropertyValue("--accent") : css.getPropertyValue("--stale");
+  ctx.beginPath(); ctx.arc(x, y, 7, 0, 2 * Math.PI); ctx.fill();
+  setText("iSource", (i.source || "none") + (i.holdMs ? ` (source change: connected=0 for ${i.holdMs} ms)` : "") + (i.deadman ? " DEADMAN: neutral" : ""));
+  setText("iStick", `${i.rx} / ${i.ry}`);
+  setText("iRt", `${i.rt} / ${cfg("TRIGGER_AXIS_RANGE")}`);
+  setText("iSeq", String(i.seq));
+  $("iRtBar").style.width = (100 * i.rt / cfg("TRIGGER_AXIS_RANGE")) + "%";
+  for (const ch of $("iButtons").children) ch.classList.toggle("on", !!i.buttonBits[ch.dataset.key]);
+  for (const ch of $("iFlags").children) ch.classList.toggle("on", !!i.flagBits[ch.dataset.key]);
+  const p = f.pad || {};
+  setText("iPad", p.enabled ? (p.present ? `Pad: ${p.name} (locks the keyboard out)` : "Pad: none connected") : (p.detail || "Pad: disabled"));
+}
+
+// ---- CONTROLLER panel ---------------------------------------------------------------------
+// f.controller (relay hub.py): the relay's own pad / keyboard / demo script while it drives,
+// else the controller block of the turret's TelemetryPacket (BT mode: the pad on the turret).
+function drawCtrlStick(id, x, y, clicked, show, active) {
+  const cv = $(id), g = cv.getContext("2d"), dpr = window.devicePixelRatio || 1, px = CTRL_STICK_PX;
+  if (cv.width !== Math.round(px * dpr)) { cv.width = Math.round(px * dpr); cv.height = Math.round(px * dpr); }
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, px, px);
+  const css = getComputedStyle(document.documentElement), col = (n) => css.getPropertyValue(n).trim();
+  const half = px / 2, r = half - CTRL_STICK_RIM_PX, range = cfg("JOY_AXIS_RANGE");
+  const lit = col(active ? "--accent" : "--stale");
+  g.fillStyle = col("--panel-2");
+  g.beginPath(); g.arc(half, half, r, 0, 2 * Math.PI); g.fill();
+  g.strokeStyle = show && clicked ? lit : col("--line");               // the rim lights on a stick click
+  g.lineWidth = show && clicked ? CTRL_CLICK_RIM_PX : 1;
+  g.stroke();
+  g.strokeStyle = col("--line"); g.lineWidth = 1;
+  g.beginPath(); g.moveTo(half, half - r); g.lineTo(half, half + r); g.moveTo(half - r, half); g.lineTo(half + r, half); g.stroke();
+  g.strokeStyle = col("--muted"); g.setLineDash([3, 3]);                 // JOY_DEADZONE: what the turret ignores
+  g.beginPath(); g.arc(half, half, r * cfg("JOY_DEADZONE"), 0, 2 * Math.PI); g.stroke();
+  g.setLineDash([]);
+  if (!show) return;
+  const k = (v) => Math.max(-1, Math.min(1, v / range));
+  g.fillStyle = lit;                                                      // wire: up negative = screen up
+  g.beginPath(); g.arc(half + r * k(x), half + r * k(y), CTRL_DOT_PX, 0, 2 * Math.PI); g.fill();
+}
+
+function renderController(f) {
+  const c = f.controller, panel = $("ctrlPanel");
+  const up = S.serverUp && !S.frozen;
+  const has = !!(c && c.reported);                  // values to draw
+  const active = has && c.live && up;               // live values: accent colours
+  panel.classList.toggle("ctrl-dim", !(c && c.live && up));
+  const tr = cfg("TRIGGER_AXIS_RANGE");
+  const named = c && c.name && c.origin === "relay" && c.source === "pad";   // the SDL pad's own name
+  setText("ctrlSource", c ? c.label + (named ? `: ${c.name}` : "") : "-");
+  const st = $("ctrlState");
+  st.className = "ctrl-state" + (has && c.level ? " " + c.level : "");
+  setText("ctrlState", has ? (c.stateText || "-") : "-");
+  const miss = $("ctrlMissing");
+  miss.hidden = has || !c;
+  if (!has && c) setText("ctrlMissing", c.note ? c.note.charAt(0).toUpperCase() + c.note.slice(1) +
+    (c.note.startsWith("not reported by this firmware") ? ": flash the current RA4M1 sketch." : ".") : "No controller data.");
+  const bits = has ? c.buttonBits : {};
+  drawCtrlStick("ctrlStickL", has ? c.lx : 0, has ? c.ly : 0, !!bits.lsClick, has, active);
+  drawCtrlStick("ctrlStickR", has ? c.rx : 0, has ? c.ry : 0, !!bits.rsClick, has, active);
+  setText("ctrlStickLText", has ? `L ${c.lx} / ${c.ly}` : "L -");
+  setText("ctrlStickRText", has ? `R ${c.rx} / ${c.ry}` : "R -");
+  const pct = (v) => Math.max(0, Math.min(100, 100 * v / tr));
+  $("ctrlLt").style.width = (has ? pct(c.lt) : 0) + "%";
+  $("ctrlRt").style.width = (has ? pct(c.rt) : 0) + "%";
+  setText("ctrlLtText", has ? `${c.lt} (${Math.round(pct(c.lt))} %)` : "-");
+  setText("ctrlRtText", has ? `${c.rt} (${Math.round(pct(c.rt))} %)` : "-");
+  for (const b of $("ctrlButtons").children) b.classList.toggle("on", !!bits[b.dataset.key]);
+  for (const d of $("ctrlDpad").children) if (d.dataset.key) d.classList.toggle("on", !!bits[d.dataset.key]);
+  const batt = $("ctrlBattery");
+  const level = has && c.battery !== null && c.battery !== undefined ? c.battery : null;
+  batt.className = "batt" + (level === null ? "" : level <= CTRL_BATTERY_LOW ? " bad" : level <= CTRL_BATTERY_WARN ? " warn" : "");
+  setText("ctrlBattery", "battery " + (has ? c.batteryText : "-"));
+  setText("ctrlNote", has ? (c.note || "") : "");
+}
+
+// ---- CONTROLLER MAP panel -----------------------------------------------------------------
+// An Xbox Wireless Controller from the front, each control labelled with what it does on this
+// turret (spec 3.2 as built: TurretState.cpp controls / normalButtons / anyStateButtons /
+// decideFlywheel, and teachButtons in servo adjust mode), lit from f.controller, the same data as
+// the CONTROLLER panel. The geometry is presentation only, in SVG user units (origin: the top
+// centre of the body, y down); every turret number in a label comes from /config.
+const CMAP_WIDE_MIN_PX = 600;                 // narrower: the drawing alone, the labels as a list below it
+const CMAP_VIEW_WIDE = "-510 -154 1062 516";  // the drawing and its label columns (the right one is wider)
+const CMAP_VIEW_NARROW = "-282 -92 564 456";  // the drawing alone
+const CMAP_COL_X = 292;                       // label columns start this far either side of the centre line
+const CMAP_ACT_DY = 23, CMAP_DET_DY = 43;     // a label's action and detail lines, below its name line
+const CMAP_LEAD_DY = 6;                       // a leader meets its label this far above the name's baseline
+const CMAP_TIP_R = 3;
+const CMAP_HALO = 8;                          // glow beyond a round control's edge
+const CMAP_BODY = "M0 34C55 34 105 12 160 9C212 6 248 26 258 66C268 108 274 168 270 222C266 282 252 330 218 346" +
+  "C190 359 154 350 138 326C120 298 102 262 72 252C44 244 22 243 0 243C-22 243 -44 244 -72 252" +
+  "C-102 262 -120 298 -138 326C-154 350 -190 359 -218 346C-252 330 -266 282 -270 222" +
+  "C-274 168 -268 108 -258 66C-248 26 -212 6 -160 9C-105 12 -55 34 0 34Z";
+const CMAP_RB = "M96 26C118 -2 150 -14 182 -16C220 -18 248 -2 262 30L252 52L100 40Z";   // lower part hidden by the body
+const CMAP_RT = "M150 -28L148 -62C147 -74 156 -82 170 -82L214 -82C228 -82 236 -72 237 -60L240 -28" +
+  "C240 -23 236 -20 231 -20L159 -20C154 -20 150 -23 150 -28Z";
+const CMAP_TRIG = {bottom: -20, height: 62, x: 140, w: 110, tagX: 194, tagY: -66, markX0: 142, markX1: 246};
+const CMAP_BUMP_TAG = [186, 2];
+const CMAP_STICKS = {lstick: {at: [-135, 107], click: "lsClick", x: "lx", y: "ly"},
+                     rstick: {at: [70, 185], click: "rsClick", x: "rx", y: "ry"}};
+const CMAP_STICK = {well: 46, cap: 30, inner: 21, rim: 33, capTravel: 12, dotTravel: 44, dot: 4};
+const CMAP_FACE = {y: [135, 73], x: [101, 107], b: [169, 107], a: [135, 141]};
+const CMAP_FACE_R = 16;
+const CMAP_DPAD = {at: [-70, 185], half: 12, reach: 34, disc: 41};
+const CMAP_SMALL = {back: [-40, 112], start: [40, 112], r: 11};
+const CMAP_XBOX = {at: [0, 64], r: 22};
+const CMAP_SHARE = {at: [0, 146], w: 24, h: 13};
+// Labels: side L / R = a label column (name, action, detail lines); T / B / TL / TR = one line at
+// x. lead = the leader's points from the control outward; a column label adds its own last bend.
+const CMAP_LABELS = [
+  {id: "lt", name: "LT", side: "L", y: -126, lead: [[-238, -50]]},
+  {id: "lb", name: "LB", side: "L", y: -60, lead: [[-244, -2]]},
+  {id: "lstick", name: "LEFT STICK", side: "L", y: 62, lead: [[-181, 107]], sub: "lsClick", subName: "click (LS)"},
+  {id: "dpadUp", name: "D-PAD \u25b2", side: "L", y: 140, lead: [[-82, 160]]},
+  {id: "dpadLeft", name: "D-PAD \u25c0", side: "L", y: 196, lead: [[-104, 185]]},
+  {id: "dpadDown", name: "D-PAD \u25bc", side: "L", y: 252, lead: [[-82, 210]]},
+  {id: "dpadRight", name: "D-PAD \u25b6", side: "L", y: 308, lead: [[-47, 197], [-47, 262]]},
+  {id: "rt", name: "RT", side: "R", y: -126, lead: [[238, -50]]},
+  {id: "rb", name: "RB", side: "R", y: -60, lead: [[244, -2]]},
+  {id: "y", name: "Y", side: "R", y: 8, lead: [[151, 73]]},
+  {id: "b", name: "B", side: "R", y: 66, lead: [[185, 107]]},
+  {id: "a", name: "A", side: "R", y: 126, lead: [[151, 141]]},
+  {id: "x", name: "X", side: "R", y: 186, lead: [[101, 123], [116, 166]]},
+  {id: "rstick", name: "RIGHT STICK", side: "R", y: 246, lead: [[103, 218]], sub: "rsClick", subName: "click (RS)"},
+  {id: "back", name: "VIEW", side: "TL", x: -48, y: -84, lead: [[-40, 101], [-40, -90]]},
+  {id: "start", name: "MENU", side: "TR", x: 48, y: -84, lead: [[40, 101], [40, -90]]},
+  {id: "xbox", name: "XBOX", side: "T", x: 0, y: -122, lead: [[0, 42], [0, -114]]},
+  {id: "share", name: "SHARE", side: "B", x: 0, y: 296, lead: [[0, 159], [0, 278]]},
+];
+// the narrow list: this order, and these short names
+const CMAP_LEGEND = [["rstick", "R stick"], ["rt", "RT"], ["lt", "LT"], ["rb", "RB"], ["lb", "LB"], ["a", "A"], ["b", "B"],
+  ["x", "X"], ["y", "Y"], ["dpadUp", "D-pad \u25b2"], ["dpadDown", "D-pad \u25bc"], ["dpadLeft", "D-pad \u25c0"],
+  ["dpadRight", "D-pad \u25b6"],
+  ["lstick", "L stick"], ["back", "View"], ["start", "Menu"], ["xbox", "Xbox"], ["share", "Share"], ["lsClick", "LS click"],
+  ["rsClick", "RS click"]];
+const CMAP_NONE = "\u2014", CMAP_MINUS = "\u2212", CMAP_DEG = "\u00b0";
+const CM = {built: false, wide: null, ns: "", on: {}, lab: {}, leg: {}, caps: {}, dots: {}, fills: {}, sig: "",
+  pulled: {lt: false, rt: false}};
+
+function svgEl(tag, attrs, parent) {
+  const el = document.createElementNS(CM.ns, tag);
+  for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, v);
+  if (parent) parent.append(el);
+  return el;
+}
+function setSvg(el, text) { if (el.textContent !== text) el.textContent = text; }
+function mirrorX(d) { let i = 0; return d.replace(/-?\d*\.?\d+/g, (n) => (i++ % 2 ? n : String(-Number(n)))); }
+function cmapReg(id, el) { (CM.on[id] = CM.on[id] || []).push(el); return el; }
+
+function buildCmap() {
+  const svg = $("cmapSvg"), c = S.conf.config;
+  CM.ns = svg.namespaceURI;
+  for (const el of [...svg.children]) if (el.localName !== "title") el.remove();
+  Object.assign(CM, {on: {}, lab: {}, leg: {}, caps: {}, dots: {}, fills: {}, sig: "", pulled: {lt: false, rt: false}});
+  const defs = svgEl("defs", {}, svg), draw = svgEl("g", {class: "cm-draw"}, svg);
+  const ctl = (id, kind, name) => {
+    const g = cmapReg(id, svgEl("g", {class: "cm-ctl " + kind, "data-cm": id}, draw));
+    svgEl("title", {}, g).textContent = name;
+    return g;
+  };
+  // triggers, behind the bumpers: a value fill clipped to the shape; RT carries the turret's
+  // pulled / released points (TRIGGER_PRESS_THRESHOLD / TRIGGER_RELEASE_THRESHOLD)
+  const T = CMAP_TRIG;
+  for (const [id, s] of [["lt", -1], ["rt", 1]]) {
+    const d = s > 0 ? CMAP_RT : mirrorX(CMAP_RT), g = ctl(id, "cm-trig", id === "lt" ? "LT (left trigger)" : "RT (right trigger)");
+    svgEl("path", {class: "cm-halo", d}, g);
+    svgEl("path", {class: "cm-shape", d}, g);
+    svgEl("path", {d}, svgEl("clipPath", {id: "cmClip-" + id}, defs));
+    CM.fills[id] = svgEl("rect", {class: "cm-fill", x: s > 0 ? T.x : -T.x - T.w, y: T.bottom, width: T.w, height: 0,
+      "clip-path": `url(#cmClip-${id})`}, g);
+    svgEl("text", {class: "cm-tag", x: s * T.tagX, y: T.tagY}, g).textContent = id.toUpperCase();
+  }
+  for (const [name, word] of [["TRIGGER_PRESS_THRESHOLD", "pulled above"], ["TRIGGER_RELEASE_THRESHOLD", "released below"]]) {
+    const y = T.bottom - T.height * c[name], m = svgEl("g", {}, CM.on.rt[0]);
+    for (const k of ["u", "o"]) svgEl("line", {class: "cm-mark-" + k, x1: T.markX0, x2: T.markX1, y1: y, y2: y}, m);
+    svgEl("title", {}, m).textContent = `the turret counts RT ${word} ${Math.round(c[name] * 100)} % (${name})`;
+  }
+  for (const [id, s] of [["lb", -1], ["rb", 1]]) {
+    const d = s > 0 ? CMAP_RB : mirrorX(CMAP_RB), g = ctl(id, "cm-bump", id === "lb" ? "LB (left bumper)" : "RB (right bumper)");
+    svgEl("path", {class: "cm-halo", d}, g);
+    svgEl("path", {class: "cm-shape", d}, g);
+    svgEl("text", {class: "cm-tag", x: s * CMAP_BUMP_TAG[0], y: CMAP_BUMP_TAG[1]}, g).textContent = id.toUpperCase();
+  }
+  svgEl("path", {class: "cm-body", d: CMAP_BODY}, draw);
+  // sticks: the cap moves a little, the dot the whole well; the ring is JOY_DEADZONE of the dot's travel
+  const K = CMAP_STICK, dz = c.JOY_DEADZONE;
+  for (const [id, s] of Object.entries(CMAP_STICKS)) {
+    const [cx, cy] = s.at, g = ctl(id, "cm-stick", id === "lstick" ? "left stick (click: LS)" : "right stick (click: RS)");
+    svgEl("circle", {class: "cm-halo", cx, cy, r: K.well + CMAP_HALO}, g);
+    svgEl("circle", {class: "cm-well", cx, cy, r: K.well}, g);
+    const cap = CM.caps[id] = svgEl("g", {}, g);
+    svgEl("circle", {class: "cm-shape", cx, cy, r: K.cap}, cap);
+    svgEl("circle", {class: "cm-cap-in", cx, cy, r: K.inner}, cap);
+    cmapReg(s.click, svgEl("circle", {class: "cm-rim", cx, cy, r: K.rim}, cap));
+    const dead = svgEl("circle", {class: "cm-dead", cx, cy, r: K.dotTravel * dz}, g);
+    svgEl("title", {}, dead).textContent = `JOY_DEADZONE: the turret ignores the first ${Math.round(dz * 100)} % of stick travel`;
+    CM.dots[id] = svgEl("circle", {class: "cm-dot", cx, cy, r: K.dot}, g);
+  }
+  // d-pad: one outlined cross, an arm per direction on top (glows beneath the cross)
+  const D = CMAP_DPAD, [dx, dy] = D.at, h = D.half, r = D.reach;
+  svgEl("circle", {class: "cm-well", cx: dx, cy: dy, r: D.disc}, draw);
+  const glows = svgEl("g", {}, draw);
+  svgEl("path", {class: "cm-shape", d: `M${dx - h} ${dy - r}H${dx + h}V${dy - h}H${dx + r}V${dy + h}H${dx + h}V${dy + r}` +
+    `H${dx - h}V${dy + h}H${dx - r}V${dy - h}H${dx - h}Z`}, draw);
+  const arm = `M${dx - h + 1} ${dy - h}V${dy - r + 1}H${dx + h - 1}V${dy - h}Z`;
+  const arrow = `M${dx} ${dy - r + 7}L${dx - 6} ${dy - r + 15}H${dx + 6}Z`;
+  for (const [id, turn, name] of [["dpadUp", 0, "d-pad up"], ["dpadRight", 90, "d-pad right"], ["dpadDown", 180, "d-pad down"],
+                                  ["dpadLeft", 270, "d-pad left"]]) {
+    const rot = `rotate(${turn} ${dx} ${dy})`;
+    cmapReg(id, svgEl("path", {class: "cm-halo", d: arm, transform: rot}, glows));
+    const g = ctl(id, "cm-btn", name);
+    g.setAttribute("transform", rot);
+    svgEl("path", {class: "cm-arm", d: arm}, g);
+    svgEl("path", {class: "cm-glyph", d: arrow}, g);
+  }
+  for (const [id, [x, y]] of Object.entries(CMAP_FACE)) {
+    const g = ctl(id, "cm-face", id.toUpperCase());
+    svgEl("circle", {class: "cm-halo", cx: x, cy: y, r: CMAP_FACE_R + CMAP_HALO}, g);
+    svgEl("circle", {class: "cm-disc", cx: x, cy: y, r: CMAP_FACE_R}, g);
+    svgEl("text", {class: "cm-letter", x, y: y + 7}, g).textContent = id.toUpperCase();
+  }
+  for (const [id, name] of [["back", "View"], ["start", "Menu"]]) {
+    const [x, y] = CMAP_SMALL[id], rr = CMAP_SMALL.r, g = ctl(id, "cm-btn", name);
+    svgEl("circle", {class: "cm-halo", cx: x, cy: y, r: rr + CMAP_HALO}, g);
+    svgEl("circle", {class: "cm-shape", cx: x, cy: y, r: rr}, g);
+    svgEl("path", {class: "cm-glyph-s", d: id === "back"
+      ? `M${x - 5} ${y - 1}h7v5h-7ZM${x - 2} ${y - 1}v-3h7v5h-5`              // View: two windows
+      : `M${x - 5} ${y - 4}h10M${x - 5} ${y}h10M${x - 5} ${y + 4}h10`}, g);   // Menu: three lines
+  }
+  {
+    const [x, y] = CMAP_XBOX.at, rr = CMAP_XBOX.r, g = ctl("xbox", "cm-btn", "Xbox button");
+    svgEl("circle", {class: "cm-halo", cx: x, cy: y, r: rr + CMAP_HALO}, g);
+    svgEl("circle", {class: "cm-shape", cx: x, cy: y, r: rr}, g);
+    svgEl("circle", {class: "cm-glyph-s", cx: x, cy: y, r: 14}, g);
+    svgEl("path", {class: "cm-glyph-s", d: `M${x - 9} ${y - 10}Q${x + 3} ${y - 2} ${x + 9} ${y + 10}M${x + 9} ${y - 10}` +
+      `Q${x - 3} ${y - 2} ${x - 9} ${y + 10}`}, g);
+  }
+  {
+    const [x, y] = CMAP_SHARE.at, w = CMAP_SHARE.w, hh = CMAP_SHARE.h, g = ctl("share", "cm-btn", "Share button");
+    svgEl("rect", {class: "cm-halo", x: x - w / 2, y: y - hh / 2, width: w, height: hh, rx: hh / 2}, g);
+    svgEl("rect", {class: "cm-shape", x: x - w / 2, y: y - hh / 2, width: w, height: hh, rx: hh / 2}, g);
+    svgEl("path", {class: "cm-glyph-s", d: `M${x} ${y + 3}V${y - 3}M${x - 3} ${y}L${x} ${y - 3}L${x + 3} ${y}`}, g);
+  }
+  // labels: a leader from the control, the control's name, what it does here
+  const labs = svgEl("g", {class: "cm-labels"}, svg);
+  for (const def of CMAP_LABELS) {
+    const g = cmapReg(def.id, svgEl("g", {class: "cm-lab", "data-cm": def.id}, labs));
+    const pts = def.lead.slice(), col = def.side === "L" ? -1 : def.side === "R" ? 1 : 0;
+    if (col) pts.push([col * (CMAP_COL_X - 20), def.y - CMAP_LEAD_DY], [col * (CMAP_COL_X - 8), def.y - CMAP_LEAD_DY]);
+    svgEl("path", {class: "cm-lead", d: "M" + pts.map((p) => p.join(" ")).join("L")}, g);
+    svgEl("circle", {class: "cm-tip", cx: pts[0][0], cy: pts[0][1], r: CMAP_TIP_R}, g);
+    const L = CM.lab[def.id] = {g, title: svgEl("title", {}, g)};
+    if (col) {
+      const x = col * CMAP_COL_X, anchor = col < 0 ? "end" : "start";
+      svgEl("text", {class: "cm-name", x, y: def.y, "text-anchor": anchor}, g).textContent = def.name;
+      L.act = svgEl("text", {class: "cm-act", x, y: def.y + CMAP_ACT_DY, "text-anchor": anchor}, g);
+      L.det = svgEl("text", {class: "cm-det", x, y: def.y + CMAP_DET_DY, "text-anchor": anchor}, g);
+      if (def.sub) cmapReg(def.sub, L.det);
+    } else {
+      const t = svgEl("text", {x: def.x, y: def.y, "text-anchor": {T: "middle", B: "middle", TL: "end", TR: "start"}[def.side]}, g);
+      svgEl("tspan", {class: "cm-name"}, t).textContent = def.name;
+      L.act = svgEl("tspan", {class: "cm-act", dx: 8}, t);
+    }
+  }
+  CM.built = true;
+  CM.wide = null;
+  cmapLayout();
+}
+
+function cmapLayout() {               // wide: labels around the drawing; narrow: the list below it
+  if (!CM.built) return;
+  const wide = $("cmapWrap").clientWidth >= CMAP_WIDE_MIN_PX;
+  if (wide === CM.wide) return;
+  CM.wide = wide;
+  $("cmapSvg").setAttribute("viewBox", wide ? CMAP_VIEW_WIDE : CMAP_VIEW_NARROW);
+  $("cmapPanel").classList.toggle("cmap-narrow", !wide);
+}
+
+// Which mapping the turret is in, from live telemetry only: servo adjust mode when the LCD's row 0
+// starts with LCD_TXT_SERVO_ADJUST (the state stays DISARMED there), else the turret's state.
+function cmapMode(f) {
+  const t = f.telemetry;
+  if (!S.live || !t) {
+    const why = !S.serverUp || S.frozen ? "Relay not responding" : f.telemetryState === "stale" ? "Telemetry stale" :
+      f.telemetryState === "badVersion" ? "Telemetry version mismatch" : "No telemetry yet";
+    return {kind: "plain", caption: `${why}: the normal mapping, nothing greyed`, cls: ""};
+  }
+  const adjust = String(cfg("LCD_TXT_SERVO_ADJUST") || ""), row0 = (t.lcdRows && t.lcdRows[0]) || "";
+  if (adjust && t.stateName === "DISARMED" && row0.startsWith(adjust)) {
+    const at = row0.slice(adjust.length).trim();
+    return {kind: "adjust", caption: adjust + (at ? ` \u00b7 servo commanded to ${at}${CMAP_DEG}` : ""), cls: "m-adjust"};
+  }
+  const st = t.stateName, drive = st === "DISARMED" || st === "ARMED";
+  return {kind: "normal", state: st, fireMode: t.fireModeName, ammo: t.ammo, cls: "m-" + st,
+    caption: "Turret: " + st + (st === "FAULT" ? ` (${t.faultName})` : "") +
+      (drive ? " \u00b7 " + (t.fireModeName === "FULL" ? "full auto" : "semi") : "")};
+}
+
+// {id: {act, det, use, ok, why}} for every control: what it does in this mode, and (from live
+// telemetry) whether the turret's state refuses it right now.
+function cmapActions(mode) {
+  const c = S.conf.config, A = {};
+  const put = (id, act, det, ok, why) => { A[id] = {act, det: det || "", use: act !== CMAP_NONE, ok: ok !== false, why: why || ""}; };
+  for (const [id] of CMAP_LEGEND) put(id, CMAP_NONE);
+  if (mode.kind === "adjust") {       // TurretState::teachButtons; the stick still aims; no strokes but X's test
+    const up = c.TRIGGER_FIRE_ANGLE > c.TRIGGER_REST_ANGLE, down = c.TRIGGER_FIRE_ANGLE < c.TRIGGER_REST_ANGLE;
+    const step = (sign, deg) => (sign > 0 ? "+" : CMAP_MINUS) + deg + CMAP_DEG + ((sign > 0 ? up : down) ? " toward FIRE" : "");
+    put("dpadUp", step(1, c.SERVO_ADJUST_STEP_SMALL_DEG)); put("dpadDown", step(-1, c.SERVO_ADJUST_STEP_SMALL_DEG));
+    put("rb", step(1, c.SERVO_ADJUST_STEP_LARGE_DEG)); put("lb", step(-1, c.SERVO_ADJUST_STEP_LARGE_DEG));
+    put("a", "Record REST"); put("b", "Record FIRE"); put("x", "Test stroke");
+    put("start", "Save & exit", "flash, if changed");   // refused while the turret moves (the save blocks)
+    put("back", "Reset to config.h", "Menu saves it");  // config.h's TRIGGER_REST_ANGLE / _FIRE_ANGLE
+    put("rstick", "Aim (pan / tilt)");                  // Y: not used here either (the default)
+    A.rt = {act: CMAP_NONE + " (disabled in servo adjust)", det: "", use: false, ok: true, why: ""};
+    return A;
+  }
+  const st = mode.kind === "normal" ? mode.state : null;      // null: no live telemetry, nothing refused
+  const drive = st === "DISARMED" || st === "ARMED";          // TurretState::controls
+  const always = drive || st === "CALIBRATING" || st === "FAULT";   // anyStateButtons: B and X
+  const here = `not in ${st}`;
+  const gate = (ok, why) => (st === null || ok ? [true, ""] : [false, why]);
+  const empty = st === "ARMED" && c.FIRE_LOCKOUT_WHEN_EMPTY && mode.ammo === 0;
+  put("rstick", "Aim (pan / tilt)", "", ...gate(drive, here));
+  put("rt", "Fire", st === null ? "" : mode.fireMode === "FULL" ? "full: hold" : "semi: one per pull",
+    ...gate(st === "ARMED" && !empty, empty ? "magazine empty: X reloads" : "only while ARMED"));
+  put("lb", c.FLYWHEEL_HOLD_MODE ? "Flywheels (hold)" : "Flywheels (toggle)", "",
+    ...gate(st === "ARMED" || (st === "DISARMED" && !c.FLYWHEEL_REQUIRES_ARMED),
+            st === "DISARMED" ? "only while ARMED" : here));
+  put("a", "Arm / disarm", "", ...gate(drive, here));
+  put("b", "Semi / full auto", "", ...gate(always, here));
+  put("x", "Reload magazine", "", ...gate(always, here));
+  put("start", "Servo adjust", "", ...gate(st === "DISARMED", "only from DISARMED"));
+  put("dpadLeft", "Set home", "", ...gate(drive, here));
+  put("dpadDown", "Go home", "", ...gate(drive, here));
+  return A;
+}
+
+function cmapTip(name, a) {
+  const c = S.conf.config;
+  let tip = `${name}: ${a.act === CMAP_NONE ? "not used on this turret" : a.act}${a.det ? ", " + a.det : ""}`;
+  if (a.act === "Fire") tip += (c.FIRE_REQUIRES_FLYWHEEL ? "; needs the flywheels spun up (FIRE_REQUIRES_FLYWHEEL)" : "") +
+    (c.FIRE_LOCKOUT_WHEN_EMPTY ? "; nothing at 0 ammo (FIRE_LOCKOUT_WHEN_EMPTY)" : "") +
+    `; pulled above ${Math.round(c.TRIGGER_PRESS_THRESHOLD * 100)} %, released below ${Math.round(c.TRIGGER_RELEASE_THRESHOLD * 100)} %`;
+  if (a.act.startsWith("Flywheels")) tip += `; ${c.FLYWHEEL_HOLD_MODE ? "spin while LB is held" : "LB toggles them"} (FLYWHEEL_HOLD_MODE)` +
+    (c.FLYWHEEL_REQUIRES_ARMED ? ", only while ARMED (FLYWHEEL_REQUIRES_ARMED)" : "");
+  if (a.act === "Arm / disarm" && c.ARM_REQUIRES_TRIGGER_RELEASED) tip += "; arming is refused while RT is pulled (ARM_REQUIRES_TRIGGER_RELEASED)";
+  if (a.act === "Reload magazine") tip += ` (to MAG_CAPACITY, ${c.MAG_CAPACITY})`;
+  if (a.act === "Save & exit") tip += "; writes REST / FIRE to the turret's flash only if they changed (the turret " +
+    "boots on them from then on); refused while the turret moves, because the save pauses it for about 50 ms";
+  if (a.act === "Reset to config.h") tip += ` (REST ${c.TRIGGER_REST_ANGLE}, FIRE ${c.TRIGGER_FIRE_ANGLE}), the servo to that REST`;
+  return tip + (a.ok ? "" : " \u2014 refused now: " + a.why);
+}
+
+function cmapApply(acts) {
+  const sig = JSON.stringify(acts);
+  if (sig === CM.sig) return;
+  CM.sig = sig;
+  for (const def of CMAP_LABELS) {
+    const L = CM.lab[def.id], a = acts[def.id];
+    setSvg(L.act, a.act);
+    if (def.sub) setSvg(L.det, `${def.subName} ${acts[def.sub].act}`);
+    else if (L.det) setSvg(L.det, a.det);
+    L.g.classList.toggle("unused", !a.use);
+    L.g.classList.toggle("refused", a.use && !a.ok);
+    setSvg(L.title, cmapTip(def.name, a) + (def.sub ? `; ${cmapTip(def.subName, acts[def.sub])}` : ""));
+  }
+  // the narrow list: what is used, in CMAP_LEGEND order, then one row of what is not
+  const ul = $("cmapLegend"), unused = [];
+  ul.textContent = ""; CM.leg = {};
+  const key = (id, short) => {
+    const k = document.createElement("span"); k.className = "k"; k.dataset.cm = id; k.textContent = short;
+    (CM.leg[id] = CM.leg[id] || []).push(k);
+    return k;
+  };
+  for (const [id, short] of CMAP_LEGEND) {
+    const a = acts[id];
+    if (a.act === CMAP_NONE) { unused.push([id, short]); continue; }
+    const li = document.createElement("li"), t = document.createElement("span");
+    li.className = !a.use ? "unused" : a.ok ? "" : "refused";
+    li.title = cmapTip(short, a);
+    t.className = "t"; t.textContent = a.act + (a.det ? " \u2014 " + a.det : "") + (a.ok ? "" : " \u00b7 " + a.why);
+    li.append(key(id, short), t); ul.append(li);
+    CM.leg[id].push(li);
+  }
+  if (unused.length) {
+    const li = document.createElement("li"), n = document.createElement("span"), box = document.createElement("span");
+    n.className = "none"; n.textContent = "not used"; box.className = "cm-chips";
+    for (const [id, short] of unused) box.append(key(id, short));
+    li.append(n, box); ul.append(li);
+  }
+}
+
+function cmapLight(id, on) {
+  for (const el of CM.on[id] || []) if (el.classList.contains("on") !== on) el.classList.toggle("on", on);
+  for (const el of CM.leg[id] || []) if (el.classList.contains("on") !== on) el.classList.toggle("on", on);
+}
+
+function renderCmap(f) {
+  if (!CM.built) return;
+  const c = f.controller, up = S.serverUp && !S.frozen;
+  const has = !!(c && c.reported);                  // values to draw
+  $("cmapPanel").classList.toggle("cmap-dim", !(c && c.live && up));
+  const mode = cmapMode(f), acts = cmapActions(mode);
+  cmapApply(acts);
+  const m = $("cmapMode");
+  setText("cmapMode", mode.caption);
+  if (m.className !== "cmap-mode " + mode.cls) m.className = "cmap-mode " + mode.cls;
+  setText("cmapSource", c ? "lit from: " + c.label : "");
+  const bits = has ? c.buttonBits : {};
+  for (const [key] of S.conf.bits.Buttons) cmapLight(key, !!bits[key]);
+  const range = cfg("JOY_AXIS_RANGE"), dz = cfg("JOY_DEADZONE"), K = CMAP_STICK;
+  for (const [id, s] of Object.entries(CMAP_STICKS)) {
+    const x = has ? Math.max(-1, Math.min(1, c[s.x] / range)) : 0, y = has ? Math.max(-1, Math.min(1, c[s.y] / range)) : 0;
+    const n = Math.max(1, Math.hypot(x, y));        // drawn inside the well; wire: up negative = screen up
+    const cap = `translate(${(K.capTravel * x / n).toFixed(1)} ${(K.capTravel * y / n).toFixed(1)})`;
+    const dot = `translate(${(K.dotTravel * x / n).toFixed(1)} ${(K.dotTravel * y / n).toFixed(1)})`;
+    if (CM.caps[id].getAttribute("transform") !== cap) CM.caps[id].setAttribute("transform", cap);
+    if (CM.dots[id].getAttribute("transform") !== dot) CM.dots[id].setAttribute("transform", dot);
+    cmapLight(id, Math.abs(x) > dz || Math.abs(y) > dz);   // TurretState: either axis past the dead zone
+  }
+  const tr = cfg("TRIGGER_AXIS_RANGE"), T = CMAP_TRIG;
+  for (const id of ["lt", "rt"]) {
+    const v = has ? Math.max(0, Math.min(1, c[id] / tr)) : 0, hh = (T.height * v).toFixed(1);
+    if (v > cfg("TRIGGER_PRESS_THRESHOLD")) CM.pulled[id] = true;           // the turret's hysteresis
+    else if (v < cfg("TRIGGER_RELEASE_THRESHOLD")) CM.pulled[id] = false;
+    if (CM.fills[id].getAttribute("height") !== hh) {
+      CM.fills[id].setAttribute("height", hh); CM.fills[id].setAttribute("y", (T.bottom - T.height * v).toFixed(1));
+    }
+    cmapLight(id, CM.pulled[id]);
+  }
+  const refused = Object.values(acts).some((a) => a.use && !a.ok);
+  setText("cmapNote", !has ? (c && c.note ? c.note.charAt(0).toUpperCase() + c.note.slice(1) + ": nothing lights." : "No controller data: nothing lights.")
+    : refused ? "Greyed: the turret refuses that control in its current state." : "");
+}
+
+// ---- logs ---------------------------------------------------------------------------------
+function appendLog(entries) {
+  const list = $("log"), keep = cfg("DASHBOARD_EVENT_LOG_KEEP");
+  for (const e of entries) {
+    const li = document.createElement("li"); li.dataset.kind = e.kind;
+    const tm = document.createElement("time"); tm.textContent = clock(e.t);
+    const k = document.createElement("span"); k.className = "k"; k.textContent = e.kind;
+    const tx = document.createElement("span"); tx.className = "txt"; tx.textContent = e.text;   // never parsed as HTML
+    li.append(tm, k, tx); list.prepend(li);
+  }
+  while (list.children.length > keep) list.lastElementChild.remove();
+}
+function appendText(entries) {
+  const list = $("text"), keep = cfg("DASHBOARD_EVENT_LOG_KEEP");
+  for (const e of entries) {
+    const li = document.createElement("li");
+    const tm = document.createElement("time"); tm.textContent = clock(e.t);
+    const k = document.createElement("span"); k.className = "k"; k.textContent = e.via;
+    const tx = document.createElement("span"); tx.className = "txt"; tx.textContent = e.text;
+    li.append(tm, k, tx); list.prepend(li);
+  }
+  while (list.children.length > keep) list.lastElementChild.remove();
+}
+
+// ---- stall graph --------------------------------------------------------------------------
+function pushStall(t) {
+  const now = performance.now() / 1000;
+  const last = S.stall[S.stall.length - 1];
+  if (last && last.seq === t.seq && last.up === t.uptimeMs) return;
+  S.stall.push({t: now, s: t.stallSample, b: t.stallBaseline, seq: t.seq, up: t.uptimeMs});
+  while (S.stall.length && S.stall[0].t < now - STALL_GRAPH_S) S.stall.shift();
+}
+function drawStall() {
+  const cv = $("stall"), g = cv.getContext("2d"), dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  if (!W || !H) return;
+  if (cv.width !== Math.round(W * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+  const css = getComputedStyle(document.documentElement), col = (n) => css.getPropertyValue(n).trim();
+  const pts = S.stall, delta = cfg("STALL_DELTA_COUNTS");
+  g.fillStyle = col("--muted"); g.font = "11px " + col("--mono");
+  if (!pts.length) { g.fillText("no live samples", 8, 16); return; }
+  const now = performance.now() / 1000;
+  const base = pts[pts.length - 1].b;
+  let span = delta * STALL_MIN_SPAN_FACTOR;
+  for (const p of pts) span = Math.max(span, Math.abs(p.s - p.b) * 1.2, Math.abs(p.b - base) * 1.2);
+  const X = (t) => W * (1 - (now - t) / STALL_GRAPH_S), Y = (v) => H / 2 - (v - base) / span * (H / 2 - 8);
+  // threshold band around the latest baseline
+  g.fillStyle = col("--g-band"); g.fillRect(0, Y(base + delta), W, Y(base - delta) - Y(base + delta));
+  g.strokeStyle = col("--g-band-line"); g.setLineDash([4, 4]); g.lineWidth = 1;
+  g.beginPath(); g.moveTo(0, Y(base + delta)); g.lineTo(W, Y(base + delta)); g.moveTo(0, Y(base - delta)); g.lineTo(W, Y(base - delta)); g.stroke();
+  g.setLineDash([]);
+  const line = (key, color, width) => {
+    g.strokeStyle = color; g.lineWidth = width; g.beginPath();
+    let prev = null;
+    for (const p of pts) {
+      const x = X(p.t), y = Y(p[key]);
+      if (!prev || p.t - prev.t > STALL_GAP_S) g.moveTo(x, y); else g.lineTo(x, y);
+      prev = p;
+    }
+    g.stroke();
+  };
+  line("b", col("--g-base"), 2);
+  line("s", col("--g-sample"), 1.5);
+  g.fillStyle = col("--muted");
+  g.fillText(`${Math.round(base + span)}`, 4, 12); g.fillText(`${Math.round(base - span)}`, 4, H - 4);
+  g.fillText(`-${STALL_GRAPH_S} s`, W - 34, H - 4);
+}
+
+// ---- 3D turret (hand-rolled: convex meshes, back-face culling, painter's sort, orbit) ----------
+const R3 = (() => {
+  const DEG = Math.PI / 180;
+  // Render geometry in mm (presentation only): y up, barrel along +z at pan = tilt = 0.
+  const G = { baseR: 95, baseH: 40, tableR: 85, tableH: 12, tableY: 46, uprW: 16, uprH: 110, uprD: 50, uprX: 62,
+    uprY: 107, pivotY: 150, barrelW: 80, barrelH: 60, barrelL: 220, barrelZ: 40, tubeR: 14, tubeL: 120, tubeY: 12,
+    tubeZ: 190, homeLen: 320, panArcR: 140, tiltArcR: 160, tiltArcX: 96, grid: 300, gridStep: 50, segs: 20,
+    tick: 18, arcSteps: 48 };
+  const CAM0 = {yaw: 35 * DEG, pitch: 22 * DEG, dist: 680, target: [0, 120, 40]};
+  const PITCH_MIN = -5 * DEG, PITCH_MAX = 85 * DEG, DIST_MIN = 300, DIST_MAX = 2500, DRAG_RAD_PER_PX = 0.01, WHEEL_K = 0.001;
+  const FOCAL_K = 1.2, LIGHT = [0.4, 0.8, 0.45], AMBIENT = 0.35, DIFFUSE = 0.75, NEAR = -1;
+  const cv = $("view"), g = cv.getContext("2d");
+  let cam = {...CAM0, target: [...CAM0.target]};
+  let pose = null, queued = false;
+
+  const T = (x, y, z) => [1, 0, 0, x, 0, 1, 0, y, 0, 0, 1, z];
+  const RY = (t) => [Math.cos(t), 0, Math.sin(t), 0, 0, 1, 0, 0, -Math.sin(t), 0, Math.cos(t), 0];
+  const RX = (t) => [1, 0, 0, 0, 0, Math.cos(t), -Math.sin(t), 0, 0, Math.sin(t), Math.cos(t), 0];
+  function mul(a, b) {
+    const r = new Array(12);
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 4; j++)
+      r[i * 4 + j] = a[i * 4] * b[j] + a[i * 4 + 1] * b[4 + j] + a[i * 4 + 2] * b[8 + j] + (j === 3 ? a[i * 4 + 3] : 0);
+    return r;
+  }
+  const app = (m, p) => [m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3], m[4] * p[0] + m[5] * p[1] + m[6] * p[2] + m[7],
+    m[8] * p[0] + m[9] * p[1] + m[10] * p[2] + m[11]];
+  function box(w, h, d) {
+    const x = w / 2, y = h / 2, z = d / 2, v = [];
+    for (const [a, b, c] of [[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]]) v.push([a * x, b * y, c * z]);
+    return {v, f: [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [3, 7, 6, 2], [0, 4, 7, 3], [1, 2, 6, 5]]};
+  }
+  function cylinder(r, h, n, axis) {
+    const v = [], f = [], top = [], bot = [];
+    for (let i = 0; i < n; i++) {
+      const a = 2 * Math.PI * i / n, c = r * Math.cos(a), s = r * Math.sin(a);
+      v.push(axis === "y" ? [c, -h / 2, s] : [c, s, -h / 2]); v.push(axis === "y" ? [c, h / 2, s] : [c, s, h / 2]);
+    }
+    for (let i = 0; i < n; i++) {
+      const a = 2 * i, b = 2 * ((i + 1) % n);
+      f.push(axis === "y" ? [a, a + 1, b + 1, b] : [a, b, b + 1, a + 1]); bot.push(a); top.push(a + 1);
+    }
+    f.push(axis === "y" ? bot : bot.slice().reverse()); f.push(axis === "y" ? top.slice().reverse() : top);
+    return {v, f};
+  }
+  // pan (deg): + = counter-clockwise seen from above = RY(+pan); tilt (deg): + = barrel up = RX(-tilt)
+  const yoke = (p) => RY(p * DEG);
+  const barrelFrame = (p, t) => mul(mul(RY(p * DEG), T(0, G.pivotY, 0)), RX(-t * DEG));
+  const parts = [
+    {mesh: cylinder(G.baseR, G.baseH, G.segs, "y"), place: () => T(0, G.baseH / 2, 0), color: "--r-base"},
+    {mesh: cylinder(G.tableR, G.tableH, G.segs, "y"), place: (p) => mul(yoke(p), T(0, G.tableY, 0)), color: "--r-yoke"},
+    {mesh: box(G.uprW, G.uprH, G.uprD), place: (p) => mul(yoke(p), T(-G.uprX, G.uprY, 0)), color: "--r-yoke"},
+    {mesh: box(G.uprW, G.uprH, G.uprD), place: (p) => mul(yoke(p), T(G.uprX, G.uprY, 0)), color: "--r-yoke"},
+    {mesh: box(G.barrelW, G.barrelH, G.barrelL), place: (p, t) => mul(barrelFrame(p, t), T(0, 0, G.barrelZ)), color: "--r-barrel"},
+    {mesh: cylinder(G.tubeR, G.tubeL, G.segs, "z"), place: (p, t) => mul(barrelFrame(p, t), T(0, G.tubeY, G.tubeZ)), color: "--r-barrel"},
+  ];
+  function viewMatrix() {
+    const m = mul(RX(cam.pitch), RY(-cam.yaw));
+    const t = app(m, cam.target.map((v) => -v));
+    m[3] = t[0]; m[7] = t[1]; m[11] = t[2] - cam.dist;
+    return m;
+  }
+  function rgbOf(str) {
+    const s = str.trim();
+    if (s.startsWith("#")) { const n = parseInt(s.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; }
+    const m = s.match(/\d+(\.\d+)?/g); return m ? m.slice(0, 3).map(Number) : [128, 128, 128];
+  }
+  function shade(rgb, k) { const f = (c) => Math.round(Math.min(255, c * k)); return `rgb(${f(rgb[0])},${f(rgb[1])},${f(rgb[2])})`; }
+  function dirFor(pan, tilt) {   // unit vector of a barrel at (pan, tilt), degrees
+    const p = pan * DEG, t = tilt * DEG;
+    return [Math.sin(p) * Math.cos(t), Math.sin(t), Math.cos(p) * Math.cos(t)];
+  }
+  function draw() {
+    queued = false;
+    const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+    if (!W || !H) return;
+    if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+    const css = getComputedStyle(document.documentElement), col = (n) => css.getPropertyValue(n).trim();
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.fillStyle = col("--r-bg"); g.fillRect(0, 0, W, H);
+    const V = viewMatrix(), focal = FOCAL_K * Math.min(W, H);
+    const proj = (p) => [W / 2 + focal * p[0] / -p[2], H / 2 - focal * p[1] / -p[2]];
+    // ground grid
+    g.strokeStyle = col("--r-grid"); g.lineWidth = 1; g.beginPath();
+    for (let i = -G.grid; i <= G.grid; i += G.gridStep) for (const [a, b] of [[[i, 0, -G.grid], [i, 0, G.grid]], [[-G.grid, 0, i], [G.grid, 0, i]]]) {
+      const A = app(V, a), B = app(V, b);
+      if (A[2] < NEAR && B[2] < NEAR) { const pa = proj(A), pb = proj(B); g.moveTo(pa[0], pa[1]); g.lineTo(pb[0], pb[1]); }
+    }
+    g.stroke();
+    const items = [];
+    const live = pose && pose.live;
+    const pan = pose ? pose.pan : 0, tilt = pose ? pose.tilt : 0;
+    // world-space polylines become depth-sorted segments
+    const addLine = (pts, color, width, dash) => {
+      for (let i = 0; i + 1 < pts.length; i++) {
+        const A = app(V, pts[i]), B = app(V, pts[i + 1]);
+        if (A[2] >= NEAR || B[2] >= NEAR) continue;
+        items.push({z: (A[2] + B[2]) / 2, line: [proj(A), proj(B)], color, width, dash});
+      }
+    };
+    const c = S.conf ? S.conf.config : null;
+    if (c) {
+      // pan travel on the ground; limit ticks; a "front" tick at pan 0
+      const arc = [], lo = c.PAN_LIMITS_ENABLED ? c.PAN_MIN_DEG : -180, hi = c.PAN_LIMITS_ENABLED ? c.PAN_MAX_DEG : 180;
+      for (let k = 0; k <= G.arcSteps; k++) { const a = (lo + (hi - lo) * k / G.arcSteps) * DEG; arc.push([G.panArcR * Math.sin(a), 1, G.panArcR * Math.cos(a)]); }
+      addLine(arc, col("--r-arc"), 2, c.PAN_LIMITS_ENABLED ? null : [6, 6]);
+      if (c.PAN_LIMITS_ENABLED) for (const lim of [lo, hi]) {
+        const a = lim * DEG, s = Math.sin(a), co = Math.cos(a);
+        addLine([[(G.panArcR - G.tick) * s, 1, (G.panArcR - G.tick) * co], [(G.panArcR + G.tick) * s, 1, (G.panArcR + G.tick) * co]], col("--r-limit"), 3, null);
+      }
+      addLine([[0, 1, G.panArcR - G.tick], [0, 1, G.panArcR + 2 * G.tick]], col("--muted"), 2, null);
+      // tilt travel beside the barrel, turning with the turntable
+      const M = yoke(pan), tarc = [];
+      for (let k = 0; k <= G.arcSteps; k++) {
+        const t = c.TILT_RANGE_DEG * k / G.arcSteps * DEG;
+        tarc.push(app(M, [G.tiltArcX, G.pivotY + G.tiltArcR * Math.sin(t), G.tiltArcR * Math.cos(t)]));
+      }
+      addLine(tarc, col("--r-arc"), 2, null);
+      for (const lim of [0, c.TILT_RANGE_DEG]) {
+        const t = lim * DEG, r0 = G.tiltArcR - G.tick, r1 = G.tiltArcR + G.tick;
+        addLine([app(M, [G.tiltArcX, G.pivotY + r0 * Math.sin(t), r0 * Math.cos(t)]), app(M, [G.tiltArcX, G.pivotY + r1 * Math.sin(t), r1 * Math.cos(t)])], col("--r-limit"), 3, null);
+      }
+      if (pose) {
+        const d = dirFor(pose.homePan, pose.homeTilt), o = [0, G.pivotY, 0];
+        addLine([o, [o[0] + d[0] * G.homeLen, o[1] + d[1] * G.homeLen, o[2] + d[2] * G.homeLen]], col("--r-home"), 2, [7, 5]);
+        const ht = pose.homeTilt * DEG, r0 = G.tiltArcR - G.tick, r1 = G.tiltArcR + G.tick, MH = yoke(pan);
+        addLine([app(MH, [G.tiltArcX, G.pivotY + r0 * Math.sin(ht), r0 * Math.cos(ht)]), app(MH, [G.tiltArcX, G.pivotY + r1 * Math.sin(ht), r1 * Math.cos(ht)])], col("--r-home"), 3, null);
+        const hp = pose.homePan * DEG;
+        addLine([[(G.panArcR - G.tick) * Math.sin(hp), 2, (G.panArcR - G.tick) * Math.cos(hp)], [(G.panArcR + G.tick) * Math.sin(hp), 2, (G.panArcR + G.tick) * Math.cos(hp)]], col("--r-home"), 3, null);
+      }
+    }
+    // faces
+    const L = Math.hypot(...LIGHT), ghost = rgbOf(col("--r-ghost"));
+    for (const part of parts) {
+      const M = part.place(pan, tilt), MV = mul(V, M), base = live ? rgbOf(col(part.color)) : ghost;
+      const wv = part.mesh.v.map((p) => app(M, p)), vv = part.mesh.v.map((p) => app(MV, p));
+      for (const face of part.mesh.f) {
+        const a = vv[face[0]], b = vv[face[1]], cc = vv[face[2]];
+        const n = [(b[1] - a[1]) * (cc[2] - a[2]) - (b[2] - a[2]) * (cc[1] - a[1]), (b[2] - a[2]) * (cc[0] - a[0]) - (b[0] - a[0]) * (cc[2] - a[2]),
+          (b[0] - a[0]) * (cc[1] - a[1]) - (b[1] - a[1]) * (cc[0] - a[0])];
+        if (n[0] * a[0] + n[1] * a[1] + n[2] * a[2] >= 0) continue;
+        if (face.some((i) => vv[i][2] >= NEAR)) continue;
+        const wa = wv[face[0]], wb = wv[face[1]], wc = wv[face[2]];
+        const wn = [(wb[1] - wa[1]) * (wc[2] - wa[2]) - (wb[2] - wa[2]) * (wc[1] - wa[1]), (wb[2] - wa[2]) * (wc[0] - wa[0]) - (wb[0] - wa[0]) * (wc[2] - wa[2]),
+          (wb[0] - wa[0]) * (wc[1] - wa[1]) - (wb[1] - wa[1]) * (wc[0] - wa[0])];
+        const lam = Math.max(0, (wn[0] * LIGHT[0] + wn[1] * LIGHT[1] + wn[2] * LIGHT[2]) / (Math.hypot(...wn) * L));
+        items.push({z: face.reduce((s, i) => s + vv[i][2], 0) / face.length, pts: face.map((i) => proj(vv[i])), fill: shade(base, AMBIENT + DIFFUSE * lam)});
+      }
+    }
+    items.sort((p, q) => p.z - q.z);
+    for (const it of items) {
+      if (it.line) {
+        g.strokeStyle = it.color; g.lineWidth = it.width; g.setLineDash(it.dash || []);
+        g.beginPath(); g.moveTo(it.line[0][0], it.line[0][1]); g.lineTo(it.line[1][0], it.line[1][1]); g.stroke();
+        g.setLineDash([]);
+      } else {
+        g.beginPath(); it.pts.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y))); g.closePath();
+        g.fillStyle = it.fill; g.fill(); g.strokeStyle = it.fill; g.lineWidth = 1; g.stroke();
+      }
+    }
+    if (!live) {
+      g.fillStyle = col("--bad"); g.font = "700 16px " + col("--sans"); g.textAlign = "center";
+      g.fillText(pose ? "NOT LIVE: last known pose" : "NO TELEMETRY", W / 2, H - 14); g.textAlign = "start";
+    }
+  }
+  function request() { if (!queued) { queued = true; requestAnimationFrame(draw); } }
+  let drag = null;
+  cv.addEventListener("pointerdown", (e) => { drag = {x: e.clientX, y: e.clientY}; cv.setPointerCapture(e.pointerId); });
+  cv.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    cam.yaw -= (e.clientX - drag.x) * DRAG_RAD_PER_PX;
+    cam.pitch = Math.max(PITCH_MIN, Math.min(PITCH_MAX, cam.pitch + (e.clientY - drag.y) * DRAG_RAD_PER_PX));
+    drag = {x: e.clientX, y: e.clientY}; request();
+  });
+  const endDrag = () => { drag = null; };
+  cv.addEventListener("pointerup", endDrag); cv.addEventListener("pointercancel", endDrag);
+  cv.addEventListener("wheel", (e) => { e.preventDefault(); cam.dist = Math.max(DIST_MIN, Math.min(DIST_MAX, cam.dist * Math.exp(e.deltaY * WHEEL_K))); request(); }, {passive: false});
+  const reset = () => { cam = {...CAM0, target: [...CAM0.target]}; request(); };
+  cv.addEventListener("dblclick", reset);
+  $("btnView").addEventListener("click", reset);
+  window.addEventListener("resize", request);
+  new ResizeObserver(request).observe(cv);   // the canvas follows its row's height, not only the window
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    request(); drawStall(); if (S.frame) renderController(S.frame);
+  });
+  return {
+    setPose(p) {
+      const same = pose && p && pose.pan === p.pan && pose.tilt === p.tilt && pose.homePan === p.homePan && pose.homeTilt === p.homeTilt && pose.live === p.live;
+      if (p === null && pose === null) return;
+      if (same) return;
+      pose = p; request();
+    },
+    redraw: request,
+    get pose() { return pose; },
+  };
+})();
+
+// ---- keyboard control -----------------------------------------------------------------------
+const LEVELS = ["up", "down", "left", "right", "full", "rt", "lb"];
+const PRESS = ["rt", "lb", "a", "b", "x", "dpadLeft", "dpadDown"];
+const KB = { enabled: false, session: null, seq: 0, held: new Set(), presses: {}, timer: null, codeMap: {}, msg: "", busy: false };
+
+function zeroPresses() { for (const k of PRESS) KB.presses[k] = 0; }
+zeroPresses();
+
+function levels() {
+  const lv = {};
+  for (const k of LEVELS) lv[k] = false;
+  for (const code of KB.held) { const key = KB.codeMap[code]; if (key in lv) lv[key] = true; }
+  return lv;
+}
+function headers() {
+  return {"Content-Type": "application/json", [S.conf.tokenHeader]: S.conf.token};
+}
+async function post(path, body, keepalive) {
+  const r = await fetch(path, {method: "POST", headers: headers(), body: JSON.stringify(body), keepalive: !!keepalive, cache: "no-store"});
+  let data = {};
+  try { data = await r.json(); } catch (e) { data = {}; }
+  return {status: r.status, data};
+}
+function sendState(keepalive) {
+  if (!KB.enabled || !KB.session) return;
+  KB.seq += 1;
+  const body = {session: KB.session, seq: KB.seq, levels: levels(), presses: {...KB.presses}};
+  post("/keyboard/state", body, keepalive).then(({status, data}) => {
+    if (status !== 200 && KB.enabled) kbOff(data.error || ("relay answered " + status));
+  }).catch(() => { /* the relay's deadman makes the turret neutral; the watchdog shows the outage */ });
+}
+async function kbEnable() {
+  if (!S.conf || !S.conf.token || KB.busy) return;
+  KB.busy = true;
+  try {
+    const {status, data} = await post("/keyboard/enable", {});
+    if (status === 200 && data.session) {
+      KB.enabled = true; KB.session = data.session; KB.seq = 0; KB.held.clear(); zeroPresses(); KB.msg = "";
+      clearInterval(KB.timer);
+      KB.timer = setInterval(() => sendState(false), 1000 / cfg("KEYBOARD_POST_HZ"));
+      sendState(false);
+    } else {
+      KB.msg = data.error || ("relay answered " + status);
+    }
+  } catch (e) {
+    KB.msg = "relay not reachable";
+  } finally {
+    KB.busy = false; updateKbUi();
+  }
+}
+function kbOff(why) {
+  const session = KB.session, was = KB.enabled;
+  KB.enabled = false; KB.session = null; KB.held.clear(); zeroPresses();
+  clearInterval(KB.timer); KB.timer = null;
+  KB.msg = why || "";
+  updateKbUi();
+  return {session, was};
+}
+function kbDisable(why) {
+  const {session, was} = kbOff(why);
+  if (was && session) post("/keyboard/disable", {session, why}, true).catch(() => {});
+}
+function panic() {
+  // neutral first, then off
+  if (KB.enabled) { KB.held.clear(); zeroPresses(); sendState(true); }
+  kbDisable("Esc: panic, all keys released, keyboard off");
+}
+function clearKeys(why) {
+  if (!KB.enabled) return;
+  KB.held.clear();
+  sendState(true);
+  if (why) { KB.msg = why; updateKbUi(); }
+}
+function updateKbUi() {
+  const btn = $("btnKb"), status = $("kbStatus"), banner = $("kbBanner");
+  banner.hidden = !KB.enabled;
+  if (!S.conf) return;
+  if (!S.conf.keyboardAllowed) {
+    btn.disabled = true; btn.textContent = "Enable keyboard";
+    status.className = "kb-status warn";
+    status.textContent = S.conf.mode === "monitor" ? "Not available: --monitor sends nothing." :
+      `Not available from here: keyboard control only works in a browser on the relay's own computer, at http://127.0.0.1:${location.port}/.`;
+    return;
+  }
+  const f = S.frame, padLock = f && f.keyboard && f.keyboard.padLock;
+  btn.disabled = KB.busy || (!KB.enabled && padLock);
+  btn.textContent = KB.enabled ? "Disable keyboard (Esc)" : "Enable keyboard";
+  btn.className = KB.enabled ? "danger" : "primary";
+  if (KB.enabled) {
+    const dead = f && f.keyboard && f.keyboard.deadman;
+    status.className = "kb-status " + (dead ? "warn" : "live");
+    status.textContent = dead ? "LIVE, but the relay has gone neutral (deadman): key state is not arriving." : "LIVE: keys in this tab drive the turret.";
+  } else {
+    status.className = "kb-status" + (padLock || KB.msg ? " warn" : "");
+    status.textContent = padLock ? "Locked out: a game pad is connected." : ("Off." + (KB.msg ? " " + KB.msg : " Keyboard control is off at every relay start."));
+  }
+}
+
+$("btnKb").addEventListener("click", (e) => {
+  e.currentTarget.blur();         // so Space/Enter (fire/arm) can never also press this button
+  if (KB.enabled) kbDisable("disabled in the page"); else kbEnable();
+});
+window.addEventListener("keydown", (e) => {
+  if (!KB.enabled) return;
+  if (e.key === "Meta" || e.code === "MetaLeft" || e.code === "MetaRight") {
+    clearKeys("Cmd pressed: all keys released (macOS drops key-ups while Cmd is held).");
+    return;
+  }
+  const key = KB.codeMap[e.code];
+  if (!key) return;
+  e.preventDefault();
+  if (e.repeat) return;
+  if (key === "panic") { panic(); return; }
+  KB.held.add(e.code);
+  if (PRESS.includes(key)) KB.presses[key] += 1;
+  sendState(false);
+});
+window.addEventListener("keyup", (e) => {
+  if (!KB.enabled) return;
+  if (!KB.codeMap[e.code]) return;
+  e.preventDefault();
+  KB.held.delete(e.code);
+  sendState(false);
+});
+window.addEventListener("blur", () => clearKeys("Tab lost focus: all keys released."));
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") clearKeys("Tab hidden: all keys released."); });
+window.addEventListener("pagehide", () => { if (KB.enabled) { KB.held.clear(); sendState(true); kbDisable("page closed"); } });
+
+// ---- connection, watchdog, boot token ----------------------------------------------------------
+let source = null;
+function heard() { S.lastHeard = performance.now(); if (S.frozen) { S.frozen = false; refresh(); } }
+function setServerUp(up) { if (S.serverUp !== up) { S.serverUp = up; refresh(); } }
+function refresh() { render(); }
+function setLiveClasses(telemetryState) {
+  const up = S.serverUp && !S.frozen;
+  document.body.classList.toggle("not-live", !S.live);
+  document.body.classList.toggle("srv-down", !up);
+  const word = !up ? "RELAY DOWN" : telemetryState === "none" ? "NO TELEMETRY" :
+    telemetryState === "badVersion" ? "BAD VERSION" : "STALE";
+  for (const el of document.querySelectorAll(".stamp")) if (el.textContent !== word) el.textContent = word;
+}
+function updatePills() {
+  const p = $("pillServer");
+  const up = S.serverUp && !S.frozen;
+  p.className = "pill " + (up ? "ok" : "bad");
+  p.lastElementChild.textContent = up ? "relay: connected" : (S.frozen ? "relay: NOT RESPONDING" : "relay: disconnected");
+  if (!up) {
+    S.live = false;
+    setLiveClasses(S.frame ? S.frame.telemetryState : "none");
+    const n = $("notice"); n.hidden = false; n.classList.remove("warn"); n.textContent = "RELAY NOT RESPONDING: nothing on this page is live.";
+    R3.setPose(R3.pose ? {...R3.pose, live: false} : null);
+  }
+}
+function watchdog() {
+  const quiet = performance.now() - S.lastHeard;
+  const limit = (cfg("DASHBOARD_KEEPALIVE_MS") || 1000) * QUIET_FACTOR;
+  const frozen = S.serverUp && quiet > limit;
+  if (frozen !== S.frozen) { S.frozen = frozen; refresh(); }
+  if ((S.frozen || !S.serverUp) && performance.now() - S.lastRestart > RESTART_EVERY_MS) {
+    S.lastRestart = performance.now();
+    if (!S.conf) loadConfig(); else connect();
+  }
+  updatePills();
+}
+function connect() {
+  if (source) source.close();
+  const es = new EventSource("/events");
+  source = es;
+  es.onopen = () => { heard(); setServerUp(true); };
+  es.addEventListener("ping", heard);
+  es.onmessage = (ev) => {
+    heard();
+    try { S.serverUp = true; onFrame(JSON.parse(ev.data)); } catch (err) { console.warn("bad frame", err); }
+  };
+  es.onerror = () => {
+    setServerUp(false);
+    if (es.readyState === EventSource.CLOSED) { es.close(); setTimeout(connect, RESTART_EVERY_MS / 2); }
+  };
+}
+async function loadConfig() {
+  try {
+    const r = await fetch("/config", {cache: "no-store"});
+    S.conf = await r.json();
+    buildStatic();
+    connect();
+  } catch (e) {
+    setServerUp(false);
+  }
+}
+// a size change re-lays the map out on the next frame (never inside the observer's own callback)
+new ResizeObserver(() => requestAnimationFrame(cmapLayout)).observe($("cmapWrap"));
+loadConfig();
+setInterval(watchdog, WATCHDOG_MS);
+setInterval(() => { if (S.frame) drawStall(); }, 1000 / STALL_REDRAW_HZ);
+</script>
+</body>
+</html>

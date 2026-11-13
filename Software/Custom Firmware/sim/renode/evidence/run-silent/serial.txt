@@ -1,0 +1,7 @@
+PrintAllInputs: starting the Xbox client on the ESP32-S3
+XboxControllerR4 begin() failed, lastError() = 4
+  The ESP32-S3 did not answer at all. Unplug and replug the board; if it was
+  just flashed, it may still be in its bootloader.
+XboxControllerR4 begin() failed, lastError() = 4
+  The ESP32-S3 did not answer at all. Unplug and replug the board; if it was
+  just flashed, it may still be in its bootloader.

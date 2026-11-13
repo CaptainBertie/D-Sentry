@@ -1,0 +1,50 @@
+[
+ {
+  "cmd": "AT+FWVERSION?\r\n",
+  "reply_hex": "2B 46 57 56 45 52 53 49 4F 4E 3A 20 30 2E 36 2E 39 39 0D 0A 4F 4B 0D 0A",
+  "reply_repr": "b'+FWVERSION: 0.6.99\\r\\nOK\\r\\n'",
+  "len": 24,
+  "first_byte_ms": 3.7,
+  "t_sent": 1.454
+ },
+ {
+  "cmd": "AT+HCIBEGIN\r\n",
+  "reply_hex": "",
+  "reply_repr": "b''",
+  "len": 0,
+  "first_byte_ms": null,
+  "t_sent": 4.461
+ },
+ {
+  "cmd": "AT+XBOXBEGIN\r\n",
+  "reply_hex": "",
+  "reply_repr": "b''",
+  "len": 0,
+  "first_byte_ms": null,
+  "t_sent": 6.466
+ },
+ {
+  "cmd": "AT+XBOXSTATE?\r\n",
+  "reply_hex": "2B 58 42 4F 58 53 54 41 54 45 3A 20 32 30 7C FF 7F FF 7F FF 7F FF 7F 00 00 00 00 00 00 00 00 04 FF 00 51 0D 0A 4F 4B 0D 0A",
+  "reply_repr": "b'+XBOXSTATE: 20|\\xff\\x7f\\xff\\x7f\\xff\\x7f\\xff\\x7f\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x04\\xff\\x00Q\\r\\nOK\\r\\n'",
+  "len": 41,
+  "first_byte_ms": 4.9,
+  "t_sent": 8.469
+ },
+ {
+  "cmd": "AT+FWVERSION?\r\n",
+  "reply_hex": "2B 46 57 56 45 52 53 49 4F 4E 3A 20 30 2E 36 2E 39 39 0D 0A 4F 4B 0D 0A",
+  "reply_repr": "b'+FWVERSION: 0.6.99\\r\\nOK\\r\\n'",
+  "len": 24,
+  "first_byte_ms": 3.1,
+  "t_sent": 10.473
+ },
+ {
+  "cmd": "AT+FWVERSION?\r\n",
+  "reply_hex": "2B 46 57 56 45 52 53 49 4F 4E 3A 20 30 2E 36 2E 39 39 0D 0A 4F 4B 0D 0A",
+  "reply_repr": "b'+FWVERSION: 0.6.99\\r\\nOK\\r\\n'",
+  "len": 24,
+  "first_byte_ms": 3.2,
+  "t_sent": 15.482
+ }
+]
