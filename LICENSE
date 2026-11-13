@@ -28,4 +28,4 @@ the D-Sentry-specific protocol and glue code) written for this project.
 
 It does NOT cover `Software/Custom Firmware/bridge-fork/`, which is a fork of
 Arduino's uno-r4-wifi-usb-bridge firmware and is AGPL-3.0 as a combined binary.
-See `NOTICE.md` and `THIRD_PARTY.md` for the full breakdown.
+See `THIRD_PARTY.md` for the full breakdown.

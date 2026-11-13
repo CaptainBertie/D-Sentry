@@ -6,7 +6,7 @@ It owns every turret behavior: the state machine, pan/tilt motion, firing, the s
 LEDs, the LCD, and the link to the radio chip. You upload it like any Arduino sketch.
 
 The radio chip (ESP32-S3) runs separate firmware that this sketch talks to over a serial AT
-link — see `../Custom Firmware/`. The full system picture is in `../System Block Diagram/`.
+link — see `../Custom Firmware/`. The full system picture is in `../architecture.md`.
 
 `dsentry-sketch/dsentry/config.h`, `dsentry_protocol.h` and `xbox_r4_protocol.h` are plain
 copies of `config.h` (above) and the files in `../Custom Firmware/protocol/`. If you change

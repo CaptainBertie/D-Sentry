@@ -1,30 +1,30 @@
 [submodule "Software/Custom Firmware/bridge-fork/hardware/esp32-patched/esp32"]
 	path = Software/Custom Firmware/bridge-fork/hardware/esp32-patched/esp32
-	url = /Users/jwilson/Downloads/University/Meche Projects/A4/firmware/hardware/esp32-patched/esp32
+	url = https://github.com/arduino/arduino-esp32.git
 [submodule "Software/Custom Firmware/bridge-fork/libraries/ArduinoBLE"]
 	path = Software/Custom Firmware/bridge-fork/libraries/ArduinoBLE
-	url = /Users/jwilson/Downloads/University/Meche Projects/A4/firmware/libraries/ArduinoBLE
+	url = https://github.com/arduino-libraries/ArduinoBLE.git
 [submodule "Software/Custom Firmware/bridge-fork/libraries/ArduinoHttpClient"]
 	path = Software/Custom Firmware/bridge-fork/libraries/ArduinoHttpClient
-	url = /Users/jwilson/Downloads/University/Meche Projects/A4/firmware/libraries/ArduinoHttpClient
+	url = https://github.com/arduino-libraries/ArduinoHttpClient.git
 [submodule "Software/Custom Firmware/bridge-fork/libraries/Arduino_DebugUtils"]
 	path = Software/Custom Firmware/bridge-fork/libraries/Arduino_DebugUtils
-	url = /Users/jwilson/Downloads/University/Meche Projects/A4/firmware/libraries/Arduino_DebugUtils
+	url = https://github.com/arduino-libraries/Arduino_DebugUtils.git
 [submodule "Software/Custom Firmware/bridge-fork/libraries/Arduino_ESP32_OTA"]
 	path = Software/Custom Firmware/bridge-fork/libraries/Arduino_ESP32_OTA
-	url = /Users/jwilson/Downloads/University/Meche Projects/A4/firmware/libraries/Arduino_ESP32_OTA
+	url = https://github.com/arduino-libraries/Arduino_ESP32_OTA.git
 [submodule "Software/Custom Firmware/bridge-fork/libraries/BOSSA"]
 	path = Software/Custom Firmware/bridge-fork/libraries/BOSSA
-	url = /Users/jwilson/Downloads/University/Meche Projects/A4/firmware/libraries/BOSSA
+	url = https://github.com/arduino/BOSSA.git
 [submodule "Software/Custom Firmware/bridge-fork/libraries/NimBLE-Arduino"]
 	path = Software/Custom Firmware/bridge-fork/libraries/NimBLE-Arduino
-	url = /Users/jwilson/Downloads/University/Meche Projects/A4/firmware/libraries/NimBLE-Arduino
+	url = https://github.com/h2zero/NimBLE-Arduino.git
 [submodule "Software/Custom Firmware/bridge-fork/libraries/XboxControllerNotificationParser"]
 	path = Software/Custom Firmware/bridge-fork/libraries/XboxControllerNotificationParser
-	url = /Users/jwilson/Downloads/University/Meche Projects/A4/firmware/libraries/XboxControllerNotificationParser
+	url = https://github.com/asukiaaa/arduino-XboxControllerNotificationParser.git
 [submodule "Software/Custom Firmware/bridge-fork/libraries/XboxSeriesXHIDReportBuilder_asukiaaa"]
 	path = Software/Custom Firmware/bridge-fork/libraries/XboxSeriesXHIDReportBuilder_asukiaaa
-	url = /Users/jwilson/Downloads/University/Meche Projects/A4/firmware/libraries/XboxSeriesXHIDReportBuilder_asukiaaa
+	url = https://github.com/asukiaaa/arduino-XboxSeriesXHIDReportBuilder.git
 [submodule "Software/Custom Firmware/bridge-fork/unor4wifi-reboot/hid"]
 	path = Software/Custom Firmware/bridge-fork/unor4wifi-reboot/hid
-	url = /Users/jwilson/Downloads/University/Meche Projects/A4/firmware/unor4wifi-reboot/hid
+	url = https://github.com/pennam/hid.git

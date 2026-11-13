@@ -1,11 +1,12 @@
 # Gcode
 
-Sliced on a Prusa MK3S, PETG (0.6 mm nozzle, 0.35 mm layers unless noted), nylon for the pan
-pinion gear.
+Sliced for a Prusa MK3S: PETG, 0.6 mm nozzle, 0.35 mm layers unless noted; the pan pinion in
+nylon.
 
-- **`final/`** — gcode for the turret's structural parts: `Base`, `Foot`, `Frame`, `Gears`,
-  `LeftLid`, `LeftMount`, `RightMount`, `RLid+BC`, `Shooter`, `ShooterBase`, `ShooterPinion`,
-  `TiltGear`, `TiltPinion`, `CFPinion`, `LCD+NEMA`, `Rack`.
-- **`testing/`** — fit and calibration prints: bearing/bolt/bolt-OD/nut/pin fit tests,
-  magnet tests, switch and mount-width tests, an early frame revision, and five earlier
-  rack iterations superseded by the one in `final/`.
+- **`final/`**: the turret's parts: `Base`, `Foot`, `Frame`, `Gears`, `LeftLid`, `LeftMount`,
+  `RightMount`, `RLid+BC`, `Shooter`, `ShooterBase`, `ShooterPinion`, `TiltGear`, `TiltPinion`,
+  `CFPinion`, `LCD+NEMA`, `Rack`.
+- **`testing/`**: fit and calibration prints (bearing, bolt, nut, pin, magnet, switch and
+  mount-width tests), an early frame, and five earlier racks.
+
+Measured results: `../fitment.md`.

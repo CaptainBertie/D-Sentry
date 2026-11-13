@@ -1,24 +1,19 @@
 # CAD
 
-## What's here
-
-- **`source/`** — the turret's own native Fusion 360 design: `Turret.f3z` (the main
-  assembly — frame, mounts, enclosure), `Shooter.f3z` (the dart-pusher subassembly),
-  `Flywheel cage.f3d`, and `Fit Panel.f3d` (the control panel: switch cutouts + the icon
-  set in `vendor-parts/panel-icons/`). `.f3z` is a Fusion Archive (an assembly plus every
-  document it links to, zipped); `.f3d` is a single design. Both open directly in Fusion
-  360 — **File → Open**, or drag onto the Fusion window.
-- **`vendor-parts/`** — reference models of purchased components, used for fit-checking the
-  turret design around them: the 6S battery pack, the 9 g servo, the 1602 LCD, the L298N
-  driver board, the CNC Shield V3, the NEMA17 stepper, and the control-panel icon set.
-- **`meshes/`** — the turret's own parts as sliceable meshes (STL/3MF) and one DXF profile —
-  derived from `source/`, kept so anyone can print from this repo without owning Fusion.
-- **`nameplate/`** — the D-Sentry nameplate artwork (SVG + preview render).
+- **`source/`**: the native Fusion 360 design. `Turret.f3z` is the main assembly (frame,
+  mounts, enclosure); `Shooter.f3z` the dart pusher; `Flywheel cage.f3d`; and `Fit Panel.f3d`
+  the control panel, using the icons in `vendor-parts/panel-icons/`. An `.f3z` is a zipped
+  assembly with every design it links to; an `.f3d` is one design. Open either in Fusion with
+  **File → Open**.
+- **`meshes/`**: printable STL/3MF exports of `source/`, plus one DXF profile, so you can print
+  without Fusion.
+- **`vendor-parts/`**: models of the bought parts, for fit checks: the 6S battery, the 9 g
+  servo, the 1602 LCD, the L298N, the CNC Shield V3, the NEMA17 and the panel icons.
+- **`nameplate/`**: the D-Sentry nameplate (SVG and preview).
 
 ## GearForge
 
-Every gear in this turret — the tilt pair, the pan planetary, and the shooter's
-rack-and-pinion — was generated with **GearForge**, a Fusion 360 add-in built alongside
-this project for generating parametric ISO gear profiles (spur, helical, herringbone,
-internal, worm+wheel, rack) instead of hand-drawing involute teeth. It's a separate
-project, not vendored into this repo.
+We generated every gear (the tilt pair, the pan planetary and the shooter's rack and pinion)
+with GearForge, a Fusion 360 add-in we built alongside this project. It draws parametric ISO
+spur, helical, herringbone, internal, worm and rack profiles, so nobody has to draw involute
+teeth by hand. It is a separate project and does not live in this repo.

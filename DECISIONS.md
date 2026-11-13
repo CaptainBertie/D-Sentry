@@ -1,7 +1,13 @@
 # Decisions
 
 Each entry: what was decided, why, and what else was considered. Newest at the bottom.
-Written during an unattended overnight build on 2026-10-11; nobody was available to ask.
+The early entries were written during an unattended overnight build on 2026-10-11, with nobody
+to ask; later ones come from bench sessions.
+
+> **Paths:** entries up to D19 use the development repo's layout. `firmware/` there is
+> `Software/Custom Firmware/bridge-fork/` here; `tools/` and `sim/` are under
+> `Software/Custom Firmware/`; `D-SentryCode/` is `Software/Turret Code for the Arduino/`, and
+> `D-SentryCode/docs/architecture.md` is `Software/architecture.md`.
 
 ## D01 Repo layout: one repo, bridge firmware vendored as a pristine import, its submodules re-declared
 
@@ -441,7 +447,7 @@ than computing it live — see `Hardware/Wiring Diagram/` for the formula as wir
 reflashing and reseating the connections.
 
 The L298N's channel moved from A to B and back to A during the build; channel A (IN1 D9,
-ENA D10, IN2 D11) is final — see `Hardware/Wiring Diagram/CHANGELOG.md` for the full
+ENA D10, IN2 D11) is final — see `Hardware/Wiring Diagram/README.md` for the full
 sequence.
 
 ## D26 `turret-live`: the branch this repo is built from
@@ -451,8 +457,8 @@ it, the owner rolled the turret back to before its LED-scheme and servo-flash-sa
 those two are still sitting on `d-sentry`, merged in, but were **never flashed**. Every change
 since went on a new branch, `turret-live`, which branched from just before the rollback point
 and is what has actually been running on the turret through 13 further commits of bench
-tuning (D27-D30 below). `Software/Turret Code for the Arduino/`, `Software/System Block
-Diagram/architecture.md`, `Software/Custom Firmware/protocol/`, and the PC relay under
+tuning (D27-D30 below). `Software/Turret Code for the Arduino/`, `Software/architecture.md`,
+`Software/Custom Firmware/protocol/`, and the PC relay under
 `Software/Local Web Server for WiFi Connect Mode/` all reflect `turret-live`. The LED scheme
 and the servo flash-save feature (`ServoStore.cpp/.h`) that were built on `d-sentry` are not
 part of this repo — they were never flashed to the turret.

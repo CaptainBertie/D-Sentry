@@ -22,7 +22,7 @@ The compiled firmware image is **AGPL-3.0**, because it links SudoMaker's `chAT`
 server. Building and flashing it for your own turret has no obligations. Giving the compiled
 image to anyone else requires offering them this complete source, which is exactly what's
 sitting in `artifacts/` next to its prebuilt `.bin` files. The D-Sentry-specific files are
-individually MIT. Full breakdown: `../../NOTICE.md`, `../../THIRD_PARTY.md`.
+individually MIT. Full breakdown: `../../THIRD_PARTY.md`.
 
 ## Folder map
 
