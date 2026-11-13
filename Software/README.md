@@ -10,7 +10,7 @@
 
 - `architecture.md`: the build contract. Every module, the owner's overrides of
   `D-SENTRY_SPEC.md`, and the wire protocol. The code cites it by section number.
-- `architecture-diagram.png` / `.svg`: the system block diagram.
+- `architecture-diagram.png`: the control flow, from boot through one loop tick.
 - `firmware-architecture.html`: a later, interactive view built from the firmware source: the
   control-path block diagram, the `App::begin()`/`App::loop()` flowchart and the turret's state
   diagram. Open it in a browser.
