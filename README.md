@@ -1,6 +1,6 @@
 # D-Sentry
 
-[![D-Sentry demo video — click to play](media/d-sentry-video-poster.jpg)](media/d-sentry-video.mp4)
+[![D-Sentry demo video — click to play](media/d-sentry-video-poster.jpg)](https://youtu.be/MnPMdeEDEXg)
 
 A pan/tilt foam-dart turret you aim and fire with an Xbox controller. An Arduino UNO R4 WiFi
 runs it: the main chip (RA4M1) runs the turret, and the radio chip (ESP32-S3) runs custom
