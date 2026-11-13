@@ -9,6 +9,12 @@ static_assert(TRIGGER_REST_ANGLE >= 0 && TRIGGER_REST_ANGLE <= SERVO_SPAN_DEG,
               "TRIGGER_REST_ANGLE must be within the servo's 0..SERVO_SPAN_DEG");
 static_assert(TRIGGER_FIRE_ANGLE >= 0 && TRIGGER_FIRE_ANGLE <= SERVO_SPAN_DEG,
               "TRIGGER_FIRE_ANGLE must be within the servo's 0..SERVO_SPAN_DEG");
+static_assert(TRIGGER_PREFIRE_ANGLE >= 0 && TRIGGER_PREFIRE_ANGLE <= SERVO_SPAN_DEG,
+              "TRIGGER_PREFIRE_ANGLE must be within the servo's 0..SERVO_SPAN_DEG");
+static_assert(TRIGGER_AMMO_AT_BOOT >= 0 && TRIGGER_AMMO_AT_BOOT <= MAG_CAPACITY,
+              "TRIGGER_AMMO_AT_BOOT must be 0..MAG_CAPACITY");
+static_assert(TRIGGER_CLEAR_ANGLE >= 0 && TRIGGER_CLEAR_ANGLE <= SERVO_SPAN_DEG,
+              "TRIGGER_CLEAR_ANGLE must be within the servo's 0..SERVO_SPAN_DEG");
 static_assert(MAG_CAPACITY > 0 && MAG_CAPACITY <= UINT8_MAX, "MAG_CAPACITY must fit the u8 ammo count");
 static_assert(RUMBLE_STRONG_255 <= UINT8_MAX && RUMBLE_WEAK_255 <= UINT8_MAX, "rumble strengths are 0..255");
 static_assert(TRIGGER_SWEEP_DEG_PER_S >= 0.0f, "TRIGGER_SWEEP_DEG_PER_S must be 0 (no sweep) or positive");
@@ -28,7 +34,9 @@ constexpr uint32_t kWorstSweepMs =
 
 }  // namespace
 
-static_assert(kWorstSweepMs + TRIGGER_FORWARD_MS + kWorstSweepMs + TRIGGER_RETURN_MS + RUMBLE_DURATION_MS <=
+static_assert(kWorstSweepMs + TRIGGER_FORWARD_MS + kWorstSweepMs + TRIGGER_RETURN_MS + kWorstSweepMs +
+                      TRIGGER_CLEAR_HOLD_MS + kWorstSweepMs + TRIGGER_RETURN_MS + kWorstSweepMs +
+                      TRIGGER_CHAMBER_MS + RUMBLE_DURATION_MS <=
                   UINT16_MAX,
               "the continuous full-auto rumble (a whole stroke at the worst-case SERVO_SPAN_DEG sweep, plus "
               "RUMBLE_DURATION_MS) must fit StatusPacket.rumbleMs (u16): raise TRIGGER_SWEEP_DEG_PER_S");
@@ -39,6 +47,7 @@ Trigger::Config Trigger::defaults() {
   c.requiresFlywheel = FIRE_REQUIRES_FLYWHEEL;
   c.rumbleFullAutoContinuous = RUMBLE_FULL_AUTO_CONTINUOUS;
   c.sweepDegPerS = TRIGGER_SWEEP_DEG_PER_S;
+  c.clearStop = TRIGGER_CLEAR_ENABLED;
   c.semiCooldownMs = TRIGGER_COOLDOWN_MS;
   return c;
 }
@@ -58,22 +67,28 @@ void Trigger::begin() {
   completedMs_ = 0;
   ledHoldStartMs_ = 0;
   ledHold_ = false;
-  ammo_ = MAG_CAPACITY;
+  ammo_ = TRIGGER_AMMO_AT_BOOT;
   shotsTotal_ = 0;
   prevPulled_ = false;
+  in_ = Input();
   pullArmed_ = false;
   pullUsed_ = false;
+  emptyMag_ = false;
   rumblePending_ = false;
   rumble_ = Rumble();
   testStroke_ = false;
   teachMoved_ = false;
+  leadIn_ = false;
+  chamberPending_ = false;
+  chambering_ = false;
+  chamberStartMs_ = 0;
   resetAngles();
-  command(restDeg_);
+  command(homeDeg());   // REST at ammo 0
   hal::servoEnable(false);
 }
 
 // TRIGGER_SERVO_REVERSED mirrors every angle in this one place, just before the servo. Everything
-// above it (config.h angles, SERVO ADJUST, the LCD, telemetry's servoDeg) uses the same mirrored
+// above it (config.h angles, SERVO TEACH, the LCD, telemetry's servoDeg) uses the same mirrored
 // numbers, so the owner never has to think about the servo's own direction.
 float Trigger::physicalDeg(float deg) {
   return TRIGGER_SERVO_REVERSED ? (float)SERVO_SPAN_DEG - deg : deg;
@@ -90,6 +105,7 @@ Trigger::Gate Trigger::gate(const Input& in) const {
   if (!servoPowered()) return Gate::SERVO_OFF;
   if (ammo_ == 0 && cfg_.lockoutWhenEmpty) return Gate::EMPTY;
   if (cfg_.requiresFlywheel && !in.flywheelReady) return Gate::FLYWHEEL_NOT_READY;
+  if (chambering()) return Gate::CHAMBERING;
   if (cooling_) return Gate::COOLDOWN;
   return Gate::OPEN;
 }
@@ -102,7 +118,7 @@ uint32_t Trigger::cooldownMs() const {
 
 uint32_t Trigger::longestCooldownMs() const { return cfg_.semiCooldownMs; }
 
-// The cooldown runs from the last completed stroke for cooldownMs() of the mode in force now, so
+// The cooldown runs from the end of the last shot's sequence for cooldownMs() of the mode in force now, so
 // switching full -> semi straight after a burst still waits it out. `recentShot_` drops once no
 // mode's cooldown can still be running, so the 32-bit ms clock can wrap safely.
 void Trigger::refreshCooldown(uint32_t nowMs) {
@@ -126,7 +142,28 @@ uint32_t Trigger::sweepMs(float fromDeg, float toDeg) const {
 }
 
 uint32_t Trigger::strokeMs() const {
-  return sweepMs(restDeg_, fireDeg_) + TRIGGER_FORWARD_MS + sweepMs(fireDeg_, restDeg_) + TRIGGER_RETURN_MS;
+  const uint32_t clear =
+      cfg_.clearStop ? sweepMs(restDeg_, clearDeg_) + TRIGGER_CLEAR_HOLD_MS + sweepMs(clearDeg_, restDeg_) + TRIGGER_RETURN_MS
+                     : 0;
+  return sweepMs(prefireDeg_, fireDeg_) + TRIGGER_FORWARD_MS + sweepMs(fireDeg_, restDeg_) + TRIGGER_RETURN_MS + clear +
+         sweepMs(restDeg_, prefireDeg_) + TRIGGER_CHAMBER_MS;
+}
+
+// Chambering after goHome(): starts at the update() after the move (abort() and resetMagazine()
+// have no clock), lasts TRIGGER_CHAMBER_MS.
+void Trigger::refreshChamber(uint32_t nowMs) {
+  if (chamberPending_) {
+    chamberPending_ = false;
+    chambering_ = true;
+    chamberStartMs_ = nowMs;
+  }
+  if (chambering_ && elapsed(nowMs, chamberStartMs_, TRIGGER_CHAMBER_MS)) chambering_ = false;
+}
+
+void Trigger::goHome() {
+  const float to = homeDeg();
+  if (to != servoDeg_) chamberPending_ = true;
+  command(to);
 }
 
 void Trigger::beginSweep(Phase phase, float toDeg, uint32_t nowMs) {
@@ -151,6 +188,19 @@ bool Trigger::sweepStep(uint32_t nowMs) {
 void Trigger::advance(uint32_t nowMs) {
   // Each phase starts at the update() that commands it; a zero-length one (no sweep) passes
   // straight on in the same update().
+  if (phase_ == Phase::SWEEP_CHAMBER && sweepStep(nowMs)) {
+    phase_ = Phase::HOLD_CHAMBER;
+    phaseStartMs_ = nowMs;
+  }
+  if (phase_ == Phase::HOLD_CHAMBER && elapsed(nowMs, phaseStartMs_, TRIGGER_CHAMBER_MS)) {
+    if (leadIn_) {   // a test stroke's lead-in to PRE-FIRE: now the shot itself
+      leadIn_ = false;
+      beginSweep(Phase::SWEEP_OUT, fireDeg_, nowMs);
+    } else {
+      endSequence(nowMs);
+      return;
+    }
+  }
   if (phase_ == Phase::SWEEP_OUT && sweepStep(nowMs)) {
     phase_ = Phase::HOLD_FIRE;
     phaseStartMs_ = nowMs;
@@ -161,11 +211,53 @@ void Trigger::advance(uint32_t nowMs) {
     phase_ = Phase::HOLD_REST;
     phaseStartMs_ = nowMs;
   }
-  if (phase_ == Phase::HOLD_REST && elapsed(nowMs, phaseStartMs_, TRIGGER_RETURN_MS)) completeStroke(nowMs);
+  if (phase_ == Phase::HOLD_REST && elapsed(nowMs, phaseStartMs_, TRIGGER_RETURN_MS)) {
+    if (cfg_.clearStop) {
+      beginSweep(Phase::SWEEP_CLEAR, clearDeg_, nowMs);
+    } else {
+      restReached(nowMs);
+      return;
+    }
+  }
+  if (phase_ == Phase::SWEEP_CLEAR && sweepStep(nowMs)) {
+    phase_ = Phase::HOLD_CLEAR;
+    phaseStartMs_ = nowMs;
+  }
+  if (phase_ == Phase::HOLD_CLEAR && elapsed(nowMs, phaseStartMs_, TRIGGER_CLEAR_HOLD_MS))
+    beginSweep(Phase::SWEEP_RACK, restDeg_, nowMs);
+  if (phase_ == Phase::SWEEP_RACK && sweepStep(nowMs)) {
+    phase_ = Phase::HOLD_RACK;
+    phaseStartMs_ = nowMs;
+  }
+  if (phase_ == Phase::HOLD_RACK && elapsed(nowMs, phaseStartMs_, TRIGGER_RETURN_MS)) restReached(nowMs);
 }
 
-void Trigger::beginStroke(uint32_t nowMs) {
-  beginSweep(Phase::SWEEP_OUT, fireDeg_, nowMs);
+// Full auto, trigger still held: straight on from REST to the next FIRE, no PRE-FIRE visit and
+// no chamber hold. Every gate a fresh stroke would need, as of this update's input.
+bool Trigger::burstContinues() const {
+  if (testStroke_ || fireMode_ != DS_FIRE_MODE_FULL) return false;
+  if (!in_.armed || !in_.pulled || !pullArmed_ || !servoPowered()) return false;
+  if (ammo_ == 0 && cfg_.lockoutWhenEmpty) return false;
+  return !cfg_.requiresFlywheel || in_.flywheelReady;
+}
+
+void Trigger::restReached(uint32_t nowMs) {
+  if (!testStroke_) countShot();
+  if (burstContinues()) {
+    startStroke(nowMs, cfg_.rumbleFullAutoContinuous);   // SWEEP_OUT from REST
+    return;
+  }
+  if (testStroke_ || ammo_ > 0) {
+    beginSweep(Phase::SWEEP_CHAMBER, prefireDeg_, nowMs);
+    advance(nowMs);   // without a sweep PRE-FIRE is commanded in this update()
+  } else {
+    endSequence(nowMs);   // ammo 0: the servo stays at REST, the reload position
+  }
+}
+
+void Trigger::beginStroke(uint32_t nowMs, bool leadIn) {
+  leadIn_ = leadIn;
+  beginSweep(leadIn ? Phase::SWEEP_CHAMBER : Phase::SWEEP_OUT, leadIn ? prefireDeg_ : fireDeg_, nowMs);
   ledHold_ = true;
   ledHoldStartMs_ = nowMs;
   advance(nowMs);   // without a sweep FIRE is commanded in this update(), as before
@@ -174,7 +266,7 @@ void Trigger::beginStroke(uint32_t nowMs) {
 void Trigger::startStroke(uint32_t nowMs, bool continuousRumble) {
   testStroke_ = false;
   teachMoved_ = false;
-  beginStroke(nowMs);
+  beginStroke(nowMs, false);
   pullUsed_ = true;
   rumble_.strong = RUMBLE_STRONG_255;
   rumble_.weak = RUMBLE_WEAK_255;
@@ -185,28 +277,37 @@ void Trigger::startStroke(uint32_t nowMs, bool continuousRumble) {
   rumblePending_ = true;
 }
 
-// The one place the magazine and the shot counter change: the stroke has swept out, held FIRE,
-// swept back and held REST.
-void Trigger::completeStroke(uint32_t nowMs) {
-  phase_ = Phase::IDLE;
-  if (testStroke_) {   // a teach-mode test stroke: no dart, nothing counted, no cooldown
-    testStroke_ = false;
-    return;
-  }
+// The one place a shot changes the magazine and the shot counter: the stroke has reached FIRE,
+// held it, come back to REST and held it (and, with clearStop, visited CLEAR and come back to REST
+// and held it again).
+void Trigger::countShot() {
   if (ammo_ > 0) ammo_--;
   shotsTotal_++;
+}
+
+// The sequence is over (at PRE-FIRE after chambering, or at REST at ammo 0): the next shot is
+// available, and a real shot's cooldown starts here.
+void Trigger::endSequence(uint32_t nowMs) {
+  phase_ = Phase::IDLE;
+  leadIn_ = false;
+  if (testStroke_) {   // a teach-mode test stroke: no dart, nothing counted, no cooldown
+    testStroke_ = false;
+    teachMoved_ = servoDeg_ != homeDeg();   // at PRE-FIRE with ammo 0: off home until teach ends
+    return;
+  }
   recentShot_ = true;
   completedMs_ = nowMs;
   refreshCooldown(nowMs);
 }
 
 void Trigger::update(uint32_t nowMs, const Input& in) {
-  // 1. A stroke runs only while armed (a test stroke only in adjust mode and never armed):
-  //    disarm, link loss, power off, a fault or leaving adjust mode mid-stroke means rest now
+  // 1. A stroke runs only while armed (a test stroke only in teach mode and never armed):
+  //    disarm, link loss, power off, a fault or leaving teach mode mid-stroke means rest now
   //    and no decrement, even if the caller forgot abort(). A teach-mode angle does not
-  //    outlive adjust mode either.
+  //    outlive teach mode either.
   if (strokeActive() && (testStroke_ ? !teachAllowed(in) : !in.armed)) abort();
   if (teachMoved_ && !teachAllowed(in)) abort();
+  refreshChamber(nowMs);   // after the aborts above, so their move starts chambering now
 
   // 2. Which pull is this? It counts only if it started while armed and armed has held since.
   if (!in.armed) pullArmed_ = false;
@@ -219,27 +320,31 @@ void Trigger::update(uint32_t nowMs, const Input& in) {
     pullUsed_ = false;
   }
   prevPulled_ = in.pulled;
+  in_ = in;   // what restReached() checks for a full-auto burst
 
-  // 3. Advance the running stroke (sweep, hold, sweep back, hold, complete).
+  // 3. Advance the running stroke (out, hold, back, hold, clear, hold, back, hold, count, chamber,
+  //    hold).
   advance(nowMs);
 
-  // 4. The cooldown after the last completed stroke (full auto: none, so it is over in the same
-  //    update() that completed the stroke).
+  // 4. The cooldown after the last shot's sequence (full auto: none, so it is over in the same
+  //    update() that ended the sequence).
   refreshCooldown(nowMs);
 
   // 5. Start the next stroke: full auto as long as the pull counts (back-to-back, no gap,
-  //    because step 3 may have just completed the previous one); semi once per pull, after the
+  //    because step 3 may have just ended the previous one); semi once per pull, after the
   //    cooldown (a counting pull still held when it ends fires then).
   const bool full = fireMode_ == DS_FIRE_MODE_FULL;
   if (in.pulled && pullArmed_ && (full || !pullUsed_) && gate(in) == Gate::OPEN)
     startStroke(nowMs, full && cfg_.rumbleFullAutoContinuous);
 
   // 6. Indications.
+  emptyMag_ = in.armed && in.pulled && ammo_ == 0 && cfg_.lockoutWhenEmpty;
   if (ledHold_ && elapsed(nowMs, ledHoldStartMs_, LED_FIRE_FLASH_MIN_MS)) ledHold_ = false;
 }
 
-// REST at once, with no sweep, whatever phase the stroke is in: safety first, the pusher leaves
-// the dart path at the servo's full speed. Nothing is counted and no cooldown starts.
+// Home at once (PRE-FIRE while ammo > 0, else REST), with no sweep, whatever phase the stroke is
+// in: safety first, the pusher leaves the dart path at the servo's full speed. Nothing is counted
+// and no cooldown starts.
 void Trigger::abort() {
   if (strokeActive() && !testStroke_) {   // a test stroke never started a rumble
     rumble_ = Rumble();   // all zero: stop the stroke's rumble
@@ -248,21 +353,40 @@ void Trigger::abort() {
   phase_ = Phase::IDLE;
   testStroke_ = false;
   teachMoved_ = false;
+  leadIn_ = false;
   ledHold_ = false;
   pullArmed_ = false;   // the trigger must be released and pulled again
-  command(restDeg_);
+  goHome();
+}
+
+void Trigger::resetMagazine() {
+  ammo_ = MAG_CAPACITY;
+  if (!strokeActive() && !teachMoved_) goHome();   // to PRE-FIRE; a stroke chambers at its end
+}
+
+void Trigger::unloadMagazine() {
+  ammo_ = 0;
+  if (!strokeActive() && !teachMoved_) goHome();   // to REST; a stroke ends there at ammo 0
+}
+
+void Trigger::bootMagazine() {
+  ammo_ = TRIGGER_AMMO_AT_BOOT;
+  abort();
 }
 
 bool Trigger::fireOnce(uint32_t nowMs, const Input& in) {
-  refreshCooldown(nowMs);   // the cooldown as of now, for this gate() and the caller's
+  refreshCooldown(nowMs);   // the cooldown and chambering as of now, for this gate() and the caller's
+  refreshChamber(nowMs);
   if (gate(in) != Gate::OPEN) return false;
   startStroke(nowMs, false);
   return true;
 }
 
-void Trigger::setAngles(float restDeg, float fireDeg) {
+void Trigger::setAngles(float restDeg, float fireDeg, float prefireDeg, float clearDeg) {
   restDeg_ = restDeg;
   fireDeg_ = fireDeg;
+  prefireDeg_ = prefireDeg;
+  clearDeg_ = clearDeg;
 }
 
 bool Trigger::teachMove(float deg, const Input& in) {
@@ -275,8 +399,9 @@ bool Trigger::teachMove(float deg, const Input& in) {
 bool Trigger::testStroke(uint32_t nowMs, const Input& in) {
   if (!teachAllowed(in) || strokeActive() || !servoPowered()) return false;
   testStroke_ = true;
-  teachMoved_ = false;   // the stroke ends at rest by itself (or abort() puts it there)
-  beginStroke(nowMs);    // from the teach angle the servo is at, the same sweeps and holds
+  teachMoved_ = false;   // the stroke ends at PRE-FIRE by itself (or abort() puts it home)
+  // From PRE-FIRE; from any other teach angle it first sweeps there and holds TRIGGER_CHAMBER_MS.
+  beginStroke(nowMs, servoDeg_ != prefireDeg_);
   return true;
 }
 
@@ -301,12 +426,6 @@ bool Trigger::servoPowered() const { return hal::servoEnabled(); }
 
 bool Trigger::firingLedActive(uint32_t nowMs) const {
   return strokeActive() || (ledHold_ && !elapsed(nowMs, ledHoldStartMs_, LED_FIRE_FLASH_MIN_MS));
-}
-
-bool Trigger::fireReady(uint32_t nowMs, const Input& in) const {
-  Input pull = in;
-  pull.pulled = true;   // a fresh pull, now; it counts only while armed, which gate() checks
-  return gate(pull) == Gate::OPEN && !firingLedActive(nowMs);
 }
 
 bool Trigger::takeRumbleRequest(Rumble& out) {

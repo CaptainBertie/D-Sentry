@@ -30,9 +30,9 @@
 // the shell as text lines, never runs one) and the argument count must match; anything else
 // is answered and not run. Commands: help, status, stats, stall?, log <0-3>, and the actions
 // arm, disarm, fire, fly on|off, mode semi|full, mag, pan <deg>, tilt <deg>, home, sethome,
-// stop, cal, and SERVO ADJUST's servo adjust|<whole deg>|rest|fire|reset|stroke|off ("servo teach"
-// is an alias of "servo adjust"; the pad's Menu, d-pad / bumper nudges, A, B, View, X and Menu
-// again, which saves), which go through TurretState::shellCommand(),
+// stop, cal, and SERVO TEACH's servo
+// teach|<whole deg>|rest|fire|setprefire|prefire|setclear|clear|stroke|off (the pad's Y, d-pad /
+// bumper nudges, A, B, d-pad right, go to PRE-FIRE, View, go to CLEAR, X and Y again), which go through TurretState::shellCommand(),
 // so they obey exactly the permissions the controller does (architecture.md rule 5). Each
 // reply is "<cmd>: ok" or "<cmd>: refused: <reason>".
 //
@@ -140,7 +140,7 @@ class Debug {
   bool enabled(uint8_t level) const { return level != LOG_OFF && level <= level_; }
   void log(uint8_t level, const char* text);   // one line, prefixed by the uptime
   void log(uint8_t level, const Line& line);
-  // A LOG_STATE line the owner must not miss whatever the level (SERVO ADJUST's ready-to-paste
+  // A LOG_STATE line the owner must not miss whatever the level (SERVO TEACH's ready-to-paste
   // "#define" lines): always sent, like a shell reply, prefixed by the uptime.
   void logAlways(const Line& line);
   void setLevel(uint8_t level);                // clamped to LOG_VERBOSE

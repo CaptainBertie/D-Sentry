@@ -9,6 +9,12 @@
 > count doesn't match its "4:1" label here, and the stall-sense tap (§8.1) and microstep
 > setting (§8.3) are still undecided. Treat the hardware table below as a starting point, not
 > as current fact.
+>
+> **§3.2's controller mapping and §3.4's firing logic are also stale** (`DECISIONS.md`
+> D27, D30): firing now runs a three-position REST/PRE-FIRE/FIRE sequence rather than this
+> section's two-position one, X loads/unloads the magazine rather than just resetting it,
+> and the flywheels toggle on the d-pad, not the left bumper. What's actually running is in
+> `Software/Turret Code for the Arduino/`, built from the `turret-live` branch, not this spec.
 
 ---
 

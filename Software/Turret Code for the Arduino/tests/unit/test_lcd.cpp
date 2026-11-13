@@ -571,11 +571,14 @@ TEST(boot_logs_each_configured_overflow_once) {
     for (size_t st : {std::strlen(LCD_TXT_CONNECTED), pairingText(kDots.size() - 1).size(),
                       std::strlen(LCD_TXT_NO_CONNECTION)})
       expected += need(std::strlen(md), st) > (size_t)LCD_COLS;
-  // SERVO ADJUST: its text alone, beside the widest angle, and "R:<n> F:<n>" at its widest.
+  // SERVO TEACH: its text alone, beside the widest angle, and "R:<n> F:<n>" at its widest.
   const size_t deg = std::to_string(SERVO_SPAN_DEG).size();
-  expected += std::strlen(LCD_TXT_SERVO_ADJUST) > (size_t)LCD_COLS;
-  expected += need(std::strlen(LCD_TXT_SERVO_ADJUST), deg) > (size_t)LCD_COLS;
-  expected += std::strlen(LCD_TXT_SERVO_REST) + deg + 1 + std::strlen(LCD_TXT_SERVO_FIRE) + deg > (size_t)LCD_COLS;
+  const size_t value = std::max(deg, std::strlen(LCD_TXT_SERVO_UNSET));
+  expected += std::strlen(LCD_TXT_SERVO_TEACH) > (size_t)LCD_COLS;
+  expected += need(std::strlen(LCD_TXT_SERVO_TEACH), deg) > (size_t)LCD_COLS;
+  expected += std::strlen(LCD_TXT_SERVO_REST) + std::strlen(LCD_TXT_SERVO_FIRE) + std::strlen(LCD_TXT_SERVO_PREFIRE) +
+                  std::strlen(LCD_TXT_SERVO_CLEAR) + 4 * value >
+              (size_t)LCD_COLS;
   CHECK_EQ((unsigned)Lcd::overflowCount(), expected);
 
   Rig rig;
@@ -593,34 +596,43 @@ TEST(boot_logs_each_configured_overflow_once) {
   CHECK(drainUsb().find("LCD") == std::string::npos);
 }
 
-// ---- SERVO ADJUST rows (Lcd.h) ------------------------------------------------------------------------
-// Row 0: the adjust text and the commanded angle; row 1: the angles in force (saved, config.h's or
-// just recorded: Lcd shows what TurretState puts in the model), always both numbers.
-TEST(servo_adjust_rows_show_the_angle_and_the_angles_in_force) {
+// ---- SERVO TEACH rows (Lcd.h) ------------------------------------------------------------------------
+TEST(servo_teach_rows_show_the_angle_and_the_recorded_values) {
   DisplayModel m = model(DS_STATE_DISARMED);
   m.servoTeach = true;
   m.servoDeg = 23;
-  m.restDeg = 20;
+  m.restDeg = 20;   // in force but not recorded: shown as unset
   m.fireDeg = 110;
-  CHECK_EQ(Rows(m, 0).top(), row(LCD_TXT_SERVO_ADJUST, "23"));
-  CHECK_EQ(Rows(m, 0).bottom(), row(std::string(LCD_TXT_SERVO_REST) + "20 " + LCD_TXT_SERVO_FIRE + "110", ""));
-  m.restDeg = SERVO_SPAN_DEG;   // the widest rows: three digits everywhere, nothing cut
-  m.fireDeg = SERVO_SPAN_DEG;
-  m.servoDeg = SERVO_SPAN_DEG;
-  const std::string span = std::to_string(SERVO_SPAN_DEG);
-  CHECK_EQ(Rows(m, 0).top(), row(LCD_TXT_SERVO_ADJUST, span));
-  CHECK_EQ(Rows(m, 0).bottom(), row(std::string(LCD_TXT_SERVO_REST) + span + " " + LCD_TXT_SERVO_FIRE + span, ""));
-  CHECK_EQ(Rows(m, 0).cuts, (uint8_t)0);
+  m.prefireDeg = 60;
+  m.clearDeg = 40;
+  const std::string R = LCD_TXT_SERVO_REST, F = LCD_TXT_SERVO_FIRE, P = LCD_TXT_SERVO_PREFIRE,
+                    C = LCD_TXT_SERVO_CLEAR, U = LCD_TXT_SERVO_UNSET;
+  CHECK_EQ(Rows(m, 0).top(), row(LCD_TXT_SERVO_TEACH, "23"));
+  CHECK_EQ(Rows(m, 0).bottom(), row(R + U + F + U + P + U + C + U, ""));
+  m.restRecorded = true;
   m.restDeg = 23;
+  CHECK_EQ(Rows(m, 0).bottom(), row(R + "23" + F + U + P + U + C + U, ""));
+  m.fireRecorded = true;
   m.fireDeg = 108;
   m.servoDeg = 108;
-  CHECK_EQ(Rows(m, 0).top(), row(LCD_TXT_SERVO_ADJUST, "108"));
-  CHECK_EQ(Rows(m, 0).bottom(), row(std::string(LCD_TXT_SERVO_REST) + "23 " + LCD_TXT_SERVO_FIRE + "108", ""));
+  CHECK_EQ(Rows(m, 0).top(), row(LCD_TXT_SERVO_TEACH, "108"));
+  CHECK_EQ(Rows(m, 0).bottom(), row(R + "23" + F + "108" + P + U + C + U, ""));
+  m.prefireRecorded = true;
+  m.clearRecorded = true;
+  CHECK_EQ(Rows(m, 0).bottom(), row(R + "23" + F + "108" + P + "60" + C + "40", ""));
   CHECK_EQ(Rows(m, 0).cuts, (uint8_t)0);
-  if (std::strcmp(LCD_TXT_SERVO_ADJUST, "SERVO ADJUST") == 0 && std::strcmp(LCD_TXT_SERVO_REST, "R:") == 0 &&
-      std::strcmp(LCD_TXT_SERVO_FIRE, "F:") == 0 && LCD_COLS == 16) {
-    CHECK_EQ(Rows(m, 0).top(), "SERVO ADJUST 108");
-    CHECK_EQ(Rows(m, 0).bottom(), "R:23 F:108      ");
+  // The widest: four three-digit angles still fit.
+  m.restDeg = m.fireDeg = m.prefireDeg = m.clearDeg = 180;
+  CHECK_EQ(Rows(m, 0).bottom(), row(R + "180" + F + "180" + P + "180" + C + "180", ""));
+  CHECK_EQ(Rows(m, 0).cuts, (uint8_t)0);
+  if (std::strcmp(LCD_TXT_SERVO_TEACH, "SERVO TEACH") == 0 && R == "R" && F == "F" && P == "P" && C == "C" &&
+      LCD_COLS == 16) {
+    m.restDeg = 180;
+    m.fireDeg = 64;
+    m.prefireDeg = 118;
+    m.clearDeg = 150;
+    CHECK_EQ(Rows(m, 0).top(), "SERVO TEACH  108");
+    CHECK_EQ(Rows(m, 0).bottom(), "R180F64P118C150 ");   // the owner's angles
   }
   // The flag means nothing outside DISARMED (TurretState never sets it there).
   m.state = DS_STATE_ARMED;

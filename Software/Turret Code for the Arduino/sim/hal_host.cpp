@@ -153,18 +153,6 @@ struct State {
 
 State g;
 
-// The settings store lives outside State: reset() blanks it, reboot() keeps it.
-struct Store {
-  uint8_t bytes[SETTINGS_STORE_MAX_BYTES];
-  uint32_t saves = 0;
-  uint32_t loads = 0;
-  uint64_t saveUs = 0;
-  bool fail = false;
-  Store() { memset(bytes, BYTE_MASK, sizeof bytes); }
-};
-
-Store gStore;
-
 uint64_t nowCounts() { return g.us * kCountsPerUs; }
 
 // One timer overflow on `axis`: exactly what stepIsr() in hal_arduino.cpp does.
@@ -290,22 +278,12 @@ bool lcdInitStep(lcdinit::Kind kind, uint8_t value) {
 namespace hal_host {
 
 void reset() {
-  gStore = Store();
-  gStore.saveUs = kStoreSaveTypicalUs;
   g = State();
   for (bool& in : g.digitalIn) in = false;
   // Open toggles read HIGH through the pull-ups (TOGGLE_ACTIVE_LOW), LOW otherwise.
   g.digitalIn[PIN_TOGGLE_POWER] = TOGGLE_ACTIVE_LOW;
   g.digitalIn[PIN_TOGGLE_MODE] = TOGGLE_ACTIVE_LOW;
   for (uint8_t r = 0; r < LCD_ROWS; r++) memset(g.lcd[r], ' ', LCD_COLS);
-}
-
-void reboot() {
-  const Store kept = gStore;
-  reset();
-  memcpy(gStore.bytes, kept.bytes, sizeof gStore.bytes);
-  gStore.saveUs = kept.saveUs;
-  gStore.fail = kept.fail;
 }
 
 void setTimeUs(uint64_t us) {
@@ -402,19 +380,6 @@ std::string linkTakeTx() {
 uint32_t linkRxDropped() { return g.linkRxDropped; }
 UartTxProbe usbTxProbe() { return g.usbUart.probe; }
 UartTxProbe linkTxProbe() { return g.linkUart.probe; }
-
-// hal.h's typical save: 1 KB erase (~7 ms) + 1024 one-byte programs (~43 us each) at 24 MHz FCLK.
-const uint64_t kStoreSaveTypicalUs = 50 * US_PER_MS;
-void storeErase() { memset(gStore.bytes, BYTE_MASK, sizeof gStore.bytes); }
-uint8_t storeByte(size_t i) { return i < sizeof gStore.bytes ? gStore.bytes[i] : (uint8_t)BYTE_MASK; }
-void storeSetByte(size_t i, uint8_t v) {
-  if (i < sizeof gStore.bytes) gStore.bytes[i] = v;
-}
-uint32_t storeSaves() { return gStore.saves; }
-uint32_t storeLoads() { return gStore.loads; }
-void setStoreSaveUs(uint64_t us) { gStore.saveUs = us; }
-uint64_t storeSaveUs() { return gStore.saveUs; }
-void failStoreSaves(bool fail) { gStore.fail = fail; }
 
 }  // namespace hal_host
 
@@ -630,24 +595,5 @@ bool linkWrite(const uint8_t* data, size_t len) { return g.linkTx.push(data, len
 bool linkTxIdle() { return g.linkTx.idle((uint32_t)g.us); }
 size_t linkTxFree() { return g.linkTx.freeBytes(); }
 uint32_t linkTxDropped() { return g.linkTx.dropped(); }
-
-// Like hal_arduino.cpp: the store's first n bytes; a save blocks (virtual time moves on with the
-// steppers running, nothing else) and reports whether the bytes read back.
-bool storeLoad(void* dst, size_t n) {
-  if (dst == nullptr || n > SETTINGS_STORE_MAX_BYTES) return false;
-  gStore.loads++;
-  memcpy(dst, gStore.bytes, n);
-  return true;
-}
-
-bool storeSave(const void* src, size_t n) {
-  if (src == nullptr || n == 0 || n > SETTINGS_STORE_MAX_BYTES) return false;
-  if (!gStore.fail) {
-    memcpy(gStore.bytes, src, n);
-    gStore.saves++;
-  }
-  hal_host::advanceUs(gStore.saveUs);
-  return !gStore.fail && memcmp(gStore.bytes, src, n) == 0;
-}
 
 }  // namespace hal

@@ -30,7 +30,7 @@
 //   - Link loss = the active source's frame stops being connected, a source change while
 //     connected (ControlLink::takeSourceChanged), or a mode-toggle change. Effects: motion
 //     stopped (decelerated; a stall back-off in FAULT finishes), stroke aborted (rest now, no
-//     decrement), flywheels cut if FAILSAFE_STOP_FLYWHEEL, DISARMED/ARMED -> PAIRING. During
+//     decrement; Trigger's home: PRE-FIRE while ammo > 0, else REST), flywheels cut if FAILSAFE_STOP_FLYWHEEL, DISARMED/ARMED -> PAIRING. During
 //     CALIBRATING the calibration continues; during FAULT the fault continues.
 //   - Reconnection always lands in DISARMED: FAILSAFE_DISARM_ON_LOSS = false cannot restore
 //     ARMED, so Debug reports it at boot as ignored.
@@ -40,81 +40,70 @@
 //     (OFF included, so StatusPacket.wantMode always mirrors the switch); outside OFF it also
 //     counts as a link loss.
 //   - Flywheels: hold mode = on while LB is held (or the shell latch `fly on` is set); toggle
-//     mode = each LB press flips the latch. Allowed in ARMED, and in DISARMED when
+//     mode = each LB press flips the latch. In ARMED a d-pad up press also flips the latch (owner,
+//     2026-11-04), so the wheels stay on after LB is let go until d-pad up again, a disarm (cut
+//     with FLYWHEEL_REQUIRES_ARMED), a link loss, power off or a fault; in DISARMED d-pad up does
+//     nothing. Allowed in ARMED, and in DISARMED when
 //     !FLYWHEEL_REQUIRES_ARMED; anywhere else (and whenever not allowed) they are cut and
 //     the latch cleared. LB presses that are not allowed are ignored, not remembered.
 //   - A arms only from DISARMED, refused while RT is pulled (ARM_REQUIRES_TRIGGER_RELEASED);
-//     A in ARMED disarms. B (semi/full) and X (magazine) act in every state but OFF.
+//     A in ARMED disarms. D-pad up: the flywheel latch in ARMED (above). B (semi/full) and X (magazine: MAG_CAPACITY, servo to PRE-FIRE) act in
+//     every state but OFF.
+//   - Power toggle: every OFF is a new boot for the magazine too: ammo TRIGGER_AMMO_AT_BOOT
+//     (Trigger::bootMagazine), servo home (REST at ammo 0).
 //     D-pad left / down (set / go home) and the stick act in DISARMED and ARMED; any stick
 //     input past the dead zone cancels a go-home (or a shell pan/tilt move).
 //   - Trigger::Input: armed = state ARMED, pulled = Inputs::triggerPulled(), flywheelReady =
 //     Flywheel::ready() (Trigger applies FIRE_REQUIRES_FLYWHEEL and the other gates itself).
 //   - Rumble: each Trigger::takeRumbleRequest goes to ControlLink::requestRumble (the stroke
 //     starts in Trigger::update, so the request leaves on the next update, < 1 ms later).
-//   - LEDs (owner, 2026-11-03): DisplayModel::fireReady = Trigger::fireReady(triggerInput()), so
-//     ARMED is red when a pull would fire now and yellow while any gate is closed or the shot's
-//     LED_FIRE_FLASH_MIN_MS hold runs. publish() runs before Trigger::update(), and Trigger starts
-//     a full-auto stroke in the update that completes the last one, so a held trigger stays
-//     yellow from stroke to stroke. DisplayModel::emptyMagBlink = ammo 0 while DISARMED or ARMED
-//     outside SERVO ADJUST (the purple double flash, until X); it never blocks anything.
-//   - Y: unused (no action, never refused).
 //
-// SERVO ADJUST (the owner sets the trigger servo's REST and FIRE angles with the pad; a hobby
-// servo reports no position, so what is recorded is the angle being commanded). The code calls
-// it "teach" (teach_, enterTeach, Trigger::teachMove), its name until 2026-11-03.
-//   - Boot: begin() loads the record ServoStore keeps in the data flash (owner, 2026-11-03,
-//     overriding the spec's "settings RAM only"). A valid record's REST and FIRE replace config.h's
-//     for this run ("servo adjust: loaded saved REST n FIRE m"); a blank or invalid one leaves
-//     config.h's ("servo adjust: no saved angles, using config.h REST n FIRE m"). These boot angles
-//     are what the power toggle's OFF -> BOOT returns to, and they follow every save.
-//   - A rising edge of Menu (DS_BTN_START, the three-line button) enters it, only from DISARMED
-//     (Menu in CALIBRATING, ARMED or FAULT is refused and logged); Menu again saves and leaves.
-//     A Menu press acts on nothing else in its frame. The state stays DISARMED for every purpose:
-//     flywheels cut and refused whatever FLYWHEEL_REQUIRES_ARMED or LB say, no stroke but the test
+// SERVO TEACH (the owner sets the trigger servo's REST, FIRE, PRE-FIRE and CLEAR angles with the pad; a hobby
+// servo reports no position, so what is recorded is the angle being commanded):
+//   - A rising edge of Y enters it, only from DISARMED (Y anywhere else is refused and logged),
+//     and leaves it again. The state stays DISARMED for every purpose: no stroke but the test
 //     stroke, A does not arm, B does not toggle the fire mode, X does not reset the magazine,
-//     d-pad left / down do not set / go home. The stick still aims.
-//   - In it, starting from the angles in force (servo at their REST, clamped to the adjust range):
-//     d-pad up / down +- SERVO_ADJUST_STEP_SMALL_DEG, RB / LB +- SERVO_ADJUST_STEP_LARGE_DEG
+//     d-pad left / down do not set / go home, LB does not touch the flywheels. The stick still aims.
+//   - In it: d-pad up / down +- SERVO_TEACH_STEP_SMALL_DEG, RB / LB +- SERVO_TEACH_STEP_LARGE_DEG
 //     (rising edges with the BUTTON_DEBOUNCE_MS lockout, no auto-repeat), clamped to
-//     SERVO_ADJUST_MIN_DEG..SERVO_ADJUST_MAX_DEG. A records the commanded angle as REST, B as FIRE;
-//     View (DS_BTN_BACK) puts config.h's REST and FIRE back in force and moves the servo to that
-//     REST; X runs one test stroke between the REST and FIRE in force (refused while either is
-//     outside the adjust range). A, B, View and the nudges are refused while the test stroke runs.
-//     Every stroke uses the angles in force. Each record and View logs, whatever the log level
-//     (Debug::logAlways):
-//       servo adjust: REST recorded -> #define TRIGGER_REST_ANGLE 23
-//   - Leaving with Menu (or the shell's servo adjust / servo off) SAVES: when the angles in force
-//     differ from the boot angles, ServoStore writes them ("servo adjust: saved REST n FIRE m
-//     (survives power off), <t> ms") and they become the boot angles; otherwise nothing is written
-//     ("... unchanged, nothing written"). The save is the one blocking call in loop() (hal.h,
-//     about 50 ms; the step interrupt keeps running): it happens only in DISARMED with no stroke
-//     running (the test stroke is aborted first) and no axis moving, so Menu is refused
-//     (REFUSED_MOVING) while an axis moves, because the motion planner stops for the save.
-//   - Leaving any other way does NOT save: a link loss (the mode toggle included), power off, a
-//     fault, a state change (shell cal). Changed angles stay in force for this run ("servo
-//     adjust: not saved (link lost): REST n FIRE m stay for this run only"); power off returns to
-//     the boot angles. Every exit puts the servo back at the REST in force (a test stroke
-//     aborted) and logs the two lines to paste into config.h:
-//       servo adjust: done; config.h lines: #define TRIGGER_REST_ANGLE 23 / #define TRIGGER_FIRE_ANGLE 108
-//   - Shown as LCD "SERVO ADJUST <angle>" / "R:<rest> F:<fire>" (the angles in force) and LEDs
-//     LED_COLOR_SERVO_ADJUST (only FAULT wins over it; it wins over the empty-magazine flash, a
-//     test stroke included). Telemetry is unchanged: it reports DISARMED and the live servoDeg.
+//     SERVO_TEACH_MIN_DEG..SERVO_TEACH_MAX_DEG, starting from the REST in force (config.h's, or
+//     the last recorded one). A records the commanded angle as REST, B as FIRE, d-pad right as
+//     PRE-FIRE, View as CLEAR (each refused while the test stroke runs); X runs one test stroke,
+//     the whole shot sequence PRE-FIRE -> FIRE -> REST -> CLEAR -> REST -> PRE-FIRE with the
+//     angles in force and no ammo change (refused until FIRE was recorded, and while the REST,
+//     PRE-FIRE or CLEAR in force is outside the teach range). D-pad left toggles the flywheels on / off (the normal ramp), in teach mode
+//     only and whatever FLYWHEEL_REQUIRES_ARMED says; they are cut whenever teach mode ends.
+//     Recorded angles are RAM only (the spec forbids stored settings) and every stroke uses
+//     them until the power toggle opens (OFF = a new boot: config.h's angles again). Each
+//     record logs, whatever the log level (Debug::logAlways):
+//       servo teach: REST recorded -> #define TRIGGER_REST_ANGLE 23
+//     and leaving teach mode logs the four lines to paste into config.h (two log lines):
+//       servo teach: done; config.h lines: #define TRIGGER_REST_ANGLE 23 / #define TRIGGER_FIRE_ANGLE 108
+//       servo teach: done; config.h lines: #define TRIGGER_PREFIRE_ANGLE 60 / #define TRIGGER_CLEAR_ANGLE 40
+//   - Teach mode ends, with the servo back home (PRE-FIRE while ammo > 0, else REST; a test stroke
+//     aborted) and the flywheels cut, on Y, the shell, a link loss (the mode toggle included),
+//     power off, a fault and any state change.
+//   - Shown as LCD "SERVO TEACH <angle>" / "R<rest>F<fire>P<prefire>C<clear>" ("-" = not recorded) and
+//     LEDs LED_COLOR_SERVO_TEACH (below FAULT and FIRING). Telemetry is unchanged: it reports
+//     DISARMED and the live servoDeg.
 //
 // Shell actions (Debug) go through shellCommand() and obey the same rules: arm / disarm / fire
 // (one stroke through Trigger's gates, the semi cooldown included) / fly on|off (the latch) / mode semi|full / mag /
 // pan|tilt <deg> (DISARMED or ARMED; tilt only once calibrated; outside the active soft limits
 // refused) / home / sethome / stop (any state: it only ever stops) / cal (from DISARMED or
-// PAIRING: re-runs the calibration, then PAIRING -> DISARMED). SERVO ADJUST: servo adjust (alias
-// servo teach; the pad's Menu: enter from DISARMED, or save and leave) / servo <whole deg> (go to
-// that angle, refused outside SERVO_ADJUST_MIN_DEG..MAX) / servo rest (A) / servo fire (B) /
-// servo reset (View) / servo stroke (X) / servo off (save and leave; ok when not in it). In adjust
-// mode arm, fire, fly on, mode, mag, home and sethome are refused (REFUSED_TEACHING), as their pad
-// buttons are; pan, tilt, stop, disarm and fly off work; cal leaves adjust mode (a state change).
+// PAIRING: re-runs the calibration, then PAIRING -> DISARMED). SERVO TEACH: servo teach (the
+// pad's Y: enter from DISARMED, or leave) / servo <whole deg> (go to that angle, refused outside
+// SERVO_TEACH_MIN_DEG..MAX) / servo rest (A) / servo fire (B) / servo setprefire (d-pad right) /
+// servo prefire (go to the PRE-FIRE in force) / servo setclear (View) / servo clear (go to the
+// CLEAR in force) / servo stroke (X) / servo off
+// (leave; ok when not in it). In teach mode arm, fire, fly on, mode, mag, home and sethome are
+// refused (REFUSED_TEACHING), as their pad buttons are; pan, tilt, stop, disarm and fly off (it
+// also turns d-pad left's flywheels off) work;
+// cal leaves teach mode (a state change).
 //
 // SPDX-License-Identifier: MIT
 #pragma once
 #include <stdint.h>
-#include "ServoStore.h"
 #include "Trigger.h"
 #include "Types.h"
 
@@ -131,23 +120,24 @@ class TurretState {
   enum class ShellCmd : uint8_t {
     ARM, DISARM, FIRE, FLY_ON, FLY_OFF, MODE_SEMI, MODE_FULL, MAG, PAN, TILT, HOME, SETHOME,
     STOP, CAL,
-    SERVO_TEACH, SERVO_SET, SERVO_REST, SERVO_FIRE, SERVO_RESET, SERVO_STROKE, SERVO_OFF   // SERVO ADJUST
+    SERVO_TEACH, SERVO_SET, SERVO_REST, SERVO_FIRE, SERVO_STROKE, SERVO_OFF,   // SERVO TEACH
+    SERVO_PREFIRE, SERVO_SETPREFIRE, SERVO_CLEAR, SERVO_SETCLEAR
   };
   // Why a command (shell or controller) was or was not carried out.
   enum class CmdResult : uint8_t {
     OK,
     REFUSED_STATE,          // not allowed in the current state (e.g. fire while DISARMED)
     REFUSED_TRIGGER_HELD,   // arm refused: ARM_REQUIRES_TRIGGER_RELEASED and RT pulled
-    REFUSED_NOT_READY,      // fire refused: flywheel not spun up / stroke running
+    REFUSED_NOT_READY,      // fire refused: flywheel not spun up / stroke running / chambering
     REFUSED_EMPTY,          // fire refused: magazine empty with FIRE_LOCKOUT_WHEN_EMPTY
     REFUSED_RANGE,          // pan/tilt target outside the active soft limits (or not a number);
-                            // servo angle outside SERVO_ADJUST_MIN_DEG..SERVO_ADJUST_MAX_DEG
+                            // servo angle outside SERVO_TEACH_MIN_DEG..SERVO_TEACH_MAX_DEG
     REFUSED_NOT_CALIBRATED, // tilt move before calibration finished
-    REFUSED_TEACHING,       // a normal action while SERVO ADJUST is on (arm, mode, mag, home ...)
-    REFUSED_NOT_TEACHING,   // a SERVO ADJUST action while it is off
-    REFUSED_COOLDOWN,       // fire refused: semi auto, TRIGGER_COOLDOWN_MS since the last
+    REFUSED_TEACHING,       // a normal action while SERVO TEACH is on (arm, mode, mag, home ...)
+    REFUSED_NOT_TEACHING,   // a SERVO TEACH action while it is off
+    REFUSED_NO_FIRE,        // test stroke before FIRE was recorded
+    REFUSED_COOLDOWN        // fire refused: semi auto, TRIGGER_COOLDOWN_MS since the last
                             // completed stroke not over yet (Trigger::Gate::COOLDOWN)
-    REFUSED_MOVING          // SERVO ADJUST save and leave while an axis moves (the save blocks)
   };
 
   // Behaviour switches, from config.h by default; the App tests flip them.
@@ -178,14 +168,17 @@ class TurretState {
     uint32_t refusals = 0;             // refused controller / shell actions
     CmdResult lastRefusal = CmdResult::OK;
     uint32_t transitions = 0;          // state changes since begin()
-    bool servoTeach = false;           // SERVO ADJUST is on
+    bool servoTeach = false;           // SERVO TEACH is on
     int16_t servoDeg = 0;              // the angle the trigger servo is commanded to, whole deg
-    int16_t restDeg = 0;               // the REST / FIRE angles strokes use now
+    int16_t restDeg = 0;               // the REST / FIRE / PRE-FIRE angles strokes use now
     int16_t fireDeg = 0;
-    servostore::Angles bootAngles;     // what a power-toggle reboot uses: the saved record's, or
-    bool savedRecord = false;          // ... config.h's when no valid record (savedRecord false)
-    uint32_t saves = 0;                // records written since begin()
-    uint32_t saveFailures = 0;         // saves whose read-back did not match
+    int16_t prefireDeg = 0;
+    int16_t clearDeg = 0;
+    bool restRecorded = false;         // ... recorded by SERVO TEACH this power-on (else config.h)
+    bool fireRecorded = false;
+    bool prefireRecorded = false;
+    bool clearRecorded = false;
+    bool teachFlywheel = false;        // SERVO TEACH's d-pad-left flywheel toggle is on
   };
 
   TurretState();                        // defaults()
@@ -215,8 +208,7 @@ class TurretState {
   bool everConnected() const { return everConnected_; }
   uint32_t linkLostMs() const { return linkLostMs_; }   // when the link last dropped
   uint32_t transitions() const { return transitions_; } // state changes since begin()
-  bool servoTeach() const { return teach_; }             // SERVO ADJUST is on (state DISARMED)
-  const servostore::Angles& bootAngles() const { return bootAngles_; }
+  bool servoTeach() const { return teach_; }             // SERVO TEACH is on (state DISARMED)
 
  private:
   void enter(uint8_t state, uint32_t nowMs);
@@ -229,21 +221,15 @@ class TurretState {
   void controls(uint32_t nowMs);        // DISARMED / ARMED: buttons and stick
   void normalButtons(uint32_t nowMs);   // A, B, X, d-pad left / down
   void anyStateButtons();               // B and X
-  // SERVO ADJUST
-  void loadBootAngles();                // begin(): the saved record, else config.h's
-  void teachButtons(uint32_t nowMs);    // d-pad up / down, RB / LB, A, B, View, X
+  // SERVO TEACH
+  void teachButtons(uint32_t nowMs);    // d-pad, RB / LB, A, B, X, View
   CmdResult enterTeach(uint32_t nowMs, const char* via);
-  CmdResult saveAndLeaveTeach(const char* via);   // Menu / shell: refused while an axis moves
-  // No-op unless on: servo to the REST in force, then the save (save) or the "not saved" line,
-  // then the summary.
-  void leaveTeach(const char* why, bool save = false);
-  void saveAngles(const servostore::Angles& a);   // the one blocking call (hal::storeSave)
+  void leaveTeach(const char* why);     // no-op unless on: flywheels cut, servo home + summary
   CmdResult teachGoTo(int32_t deg, bool clamp, uint32_t nowMs);
-  CmdResult teachRecord(bool fire);
-  CmdResult teachRestoreConfig(uint32_t nowMs);   // View: config.h's REST and FIRE in force
+  enum class TeachAngle : uint8_t { REST, FIRE, PREFIRE, CLEAR };
+  CmdResult teachRecord(TeachAngle which);
   CmdResult teachTestStroke(uint32_t nowMs);
-  void restoreBootAngles();             // power off: the boot angles again
-  servostore::Angles anglesInForce() const;   // Trigger's, whole degrees
+  void forgetRecordedAngles();          // power off: config.h's angles again
   int16_t commandedDeg() const;         // Trigger::servoDeg(), whole degrees
   void decideFlywheel(uint32_t nowMs);
   void publish(uint32_t nowMs);         // triggerInput_, display_, ControlLink state
@@ -276,12 +262,13 @@ class TurretState {
   bool lostThisTick_ = false;      // PAIRING may not end in the update that entered it
   bool everConnected_ = false;
   bool flyLatch_ = false;
-  bool teach_ = false;             // SERVO ADJUST is on (only ever in DISARMED)
-  bool menuThisTick_ = false;      // a Menu press this update: it acts on nothing else (LB too)
-  servostore::Angles bootAngles_;  // the saved record's angles, or config.h's (savedRecord_ false)
-  bool savedRecord_ = false;       // a valid record in the data flash holds bootAngles_
-  uint32_t saves_ = 0;
-  uint32_t saveFailures_ = 0;
+  bool teach_ = false;             // SERVO TEACH is on (only ever in DISARMED)
+  bool teachFly_ = false;          // SERVO TEACH's d-pad-left flywheel toggle
+  bool teachSwitchedThisTick_ = false;   // Y switched SERVO TEACH this update (LB ignored too)
+  bool restRecorded_ = false;      // SERVO TEACH recorded REST / FIRE this power-on
+  bool fireRecorded_ = false;
+  bool prefireRecorded_ = false;
+  bool clearRecorded_ = false;
   uint32_t transitions_ = 0;
   uint32_t linkLosses_ = 0;
   uint32_t stalls_ = 0;

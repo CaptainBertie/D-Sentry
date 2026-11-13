@@ -104,8 +104,13 @@ class ModeSwitchTests(unittest.TestCase):
         self.assertEqual(t.linkSource, P.DS_LINK_SRC_BLE)
         t = usb.sink.wait(lambda t: rows(t)[1] == lcd_row(cfg("LCD_TXT_MODE_BT"), cfg("LCD_TXT_CONNECTED")),
                           sim.wall(1.0), um)
-        # The pad's A arms; firing a stroke sends a rumble report to the pad over BLE (rumble_report()).
+        # The pad's X loads the magazine and A arms; firing a stroke sends a rumble report to the pad
+        # over BLE (rumble_report()).
         um = usb.sink.mark()
+        for buttons in (P.DS_BTN_X, 0):
+            sim.command("pad set 0 0 0 %d" % buttons, r"pad on ")
+            sim.sleep(0.15)
+        usb.sink.wait(lambda t: t.ammo == cfg("MAG_CAPACITY"), sim.wall(1.0), um, "magazine loaded over BLE")
         for buttons in (P.DS_BTN_A, 0):
             sim.command("pad set 0 0 0 %d" % buttons, r"pad on ")
             sim.sleep(0.15)

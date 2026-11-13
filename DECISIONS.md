@@ -467,3 +467,92 @@ Listed here rather than guessed at:
 - **L298N channel:** moved from A to B and back to A during the build. What's in
   `D-SENTRY_SPEC.md` now (channel A, IN1 D9, ENA D10, IN2 D11) is the final state, per this
   handoff and existing memory.
+
+## D26-D31: the owner's own recap, 2026-11-13 — and a branch split that matters
+
+Told directly by the project owner, not reconstructed from a handoff. This is the most
+authoritative source in this file for anything it covers, and it corrects the branch this
+whole repo was built from.
+
+## D26 `turret-live` is what's actually on the turret; `d-sentry` is not
+
+**What.** `d-sentry` (20 commits) is where everything up through D19 above was built. After
+it, the owner rolled the turret back to before its LED-scheme and servo-flash-save changes —
+those two are still sitting on `d-sentry`, merged in, but were **never flashed**. Every change
+since went on a new branch, `turret-live`, which branched from just before the rollback point
+and is what has actually been running on the turret through 13 further commits of bench
+tuning (D27-D30 below). This repo's `Software/Turret Code for the Arduino/`,
+`Software/System Block Diagram/architecture.md`, `Software/Custom Firmware/protocol/`, and
+the PC relay under `Software/Local Web Server for WiFi Connect Mode/` were re-synced from
+`turret-live` on 2026-11-13; they had originally been built from `d-sentry` and were stale.
+
+**What this removed.** `ServoStore.cpp/.h` (the data-flash save for trigger angles) does not
+exist on `turret-live` — it was part of the rolled-back work. Don't look for it; it's gone,
+not missing.
+
+**Also found and fixed during this re-sync:** `turret-live`'s `config.h` and the ESP32 fork's
+synced copy both hard-code a real WiFi access-point password (`WIFI_AP_PASSWORD`) that had
+already been pushed to this public repo in its very first commit (it was present on
+`d-sentry` too, set 2026-11-03). Both copies have been redacted to a placeholder going
+forward. **That password is still recoverable from this repo's git history** — redacting the
+current file doesn't remove it from past commits. The turret's own AP password should be
+treated as burned; change it on the real device to something not in any commit.
+
+## D27 Firing rework: a three-position servo sequence, not two
+
+**What.** The trigger servo now moves through three named positions instead of REST/FIRE:
+**REST** (125), **FIRE** (9), **PRE-FIRE** (65), slewing at 600°/s between them. The turret
+boots with ammo at 0 and the servo at REST. X loads 15 rounds and moves the servo to
+PRE-FIRE; X again unloads (ammo back to 0, servo back to REST). A semi-auto shot is
+PRE-FIRE → FIRE → REST → PRE-FIRE. Full auto is REST → FIRE → REST repeated for as long as
+the trigger is held, dropping to PRE-FIRE only once it's released. A `TRIGGER_CLEAR_ENABLED`
+stop (a fourth, in-between position) exists in code but is switched off.
+
+**Why.** Superseded by the owner's own bench feel; no single REST/FIRE pair covered both "sits
+ready to fire" and "stays clear while not loaded." Values arrived at in stages: REST 180/FIRE
+55 and later REST 180/FIRE 64 (still two-position, pre-dating this rework) → REST 125/FIRE 10
+→ REST 125/FIRE 9/PRE-FIRE 65 (current).
+
+## D28 Pan: direction flipped, speed raised in three steps, one still a trial
+
+**What.** `PAN_DIR_INVERT` turned on (it ran the wrong way). Full-stick pan speed went
+90°/s → 135°/s → 270°/s; the last is explicitly a trial, not yet confirmed safe. Raising it
+needed the step-pulse ceiling raised (`STEP_MAX_RATE_HZ` 3,000 → 6,000/s) and acceleration
+raised (400 → 800°/s²).
+
+**Open.** Test: swing pan hard both directions, then command home. Landing exactly on home
+means the motor kept up at 270°/s and 360°/s can be tried; missing home means steps were
+skipped and the speed should drop to 180°/s instead. Not yet run as of this recap.
+
+## D29 Tilt: calibration sped up, barrel auto-lifts, stick direction settled
+
+**What.** Tilt calibration now takes under 5 seconds (was about 9), and the barrel lifts to
+20° on its own right after. `JOY_INVERT_Y` was flipped, then flipped back — the final state
+has the stick working the intuitive way (stick up = barrel up).
+
+## D30 Flywheels: a d-pad toggle, not the bumper the spec describes — and a known overdrive, unfixed
+
+**What.** D-pad up toggles the flywheels on/off while ARMED. This replaces
+`D-SENTRY_SPEC.md` §3.2's "left bumper, hold or toggle" mapping — the spec is stale here.
+
+**Open, by choice.** The flywheels still run at a fixed PWM duty of 113/255 in the mode that
+over-drives the motors (consistent with `DECISIONS.md` D25's note that `FLYWHEEL_DUTY_255` is
+one fixed point inside a voltage-dependent range). A software fix was written and offered;
+the owner has not approved it, so it is not applied. Don't apply it unasked.
+
+## D31 Bugs hit and fixed during turret-live bench sessions
+
+- **Pad wouldn't pair.** The turret still remembered an old pairing. A small one-off sketch
+  made it forget; pairing then worked once the owner's phone had Bluetooth switched off (a
+  phone in range will out-compete the turret for a pad in pairing mode).
+- **Board froze after a sketch upload.** Fixed by unplugging and replugging the board. No
+  root cause recorded beyond that.
+- **LCD froze.** Traced to wiring; errors went to zero after a reflash and reseating the
+  connections. Possibly the same issue as the "LCD blank, backlight on" problem in D25 (that
+  one came from a separate chat-history handoff and was never confirmed fixed there) — the
+  symptom described here is "froze" rather than "blank," so treat this as likely related, not
+  confirmed identical, until someone checks both against the current wiring.
+
+**Parked, still on `d-sentry` only, never flashed:** the LED scheme and the servo-flash-save
+feature (D26). If either is wanted on the real turret, it needs to be ported onto
+`turret-live`, not assumed to already be there.

@@ -16,12 +16,6 @@ static_assert(LED_PULSE_PERIOD_MS > 0, "LED_PULSE_PERIOD_MS must be positive");
 static_assert(LED_FAULT_BLINK_MS > 0, "LED_FAULT_BLINK_MS must be positive");
 static_assert(LED_PULSE_MIN_FRACTION >= 0.0f && LED_PULSE_MIN_FRACTION <= 1.0f,
               "LED_PULSE_MIN_FRACTION is a fraction of full brightness");
-static_assert(LED_EMPTY_FLASH_ON_MS > 0 && LED_EMPTY_FLASH_GAP_MS > 0,
-              "the empty-magazine flashes and the gap between them must be positive");
-static_assert(LED_EMPTY_FLASH_ON_MS + LED_EMPTY_FLASH_GAP_MS + LED_EMPTY_FLASH_ON_MS <
-                  LED_EMPTY_FLASH_PERIOD_MS,
-              "two LED_EMPTY_FLASH_ON_MS flashes and the LED_EMPTY_FLASH_GAP_MS gap must fit inside "
-              "LED_EMPTY_FLASH_PERIOD_MS, with a pause left before the next pair");
 
 namespace {
 
@@ -84,21 +78,15 @@ float Leds::pulseLevel(uint32_t elapsedMs) {
 
 bool Leds::blinkOn(uint32_t elapsedMs) { return ((elapsedMs / LED_FAULT_BLINK_MS) & 1u) == 0; }
 
-bool Leds::emptyFlashOn(uint32_t elapsedMs) {
-  const uint32_t t = elapsedMs % LED_EMPTY_FLASH_PERIOD_MS;
-  const uint32_t secondStart = LED_EMPTY_FLASH_ON_MS + LED_EMPTY_FLASH_GAP_MS;
-  return t < LED_EMPTY_FLASH_ON_MS || (t >= secondStart && t < secondStart + LED_EMPTY_FLASH_ON_MS);
-}
-
 Rgb Leds::colorFor(const DisplayModel& m, uint32_t nowMs, uint32_t emptyMagSinceMs) {
   const uint32_t inState = nowMs - m.stateSinceMs;   // wrap-safe elapsed time
   if (m.state == DS_STATE_OFF) return Rgb();
   if (m.state == DS_STATE_FAULT) return blinkOn(inState) ? unpack(LED_COLOR_FAULT) : Rgb();
-  if (m.servoTeach && m.state == DS_STATE_DISARMED) return unpack(LED_COLOR_SERVO_ADJUST);
-  // The empty-magazine double flash, over the state colour (which shows between the flashes).
-  const bool emptyShown =
-      m.emptyMagBlink && (m.state == DS_STATE_DISARMED || m.state == DS_STATE_ARMED);
-  if (emptyShown && emptyFlashOn(nowMs - emptyMagSinceMs)) return unpack(LED_COLOR_EMPTY_MAG);
+  if (m.firing) return unpack(LED_COLOR_FIRING);   // a teach-mode test stroke too
+  if (m.servoTeach && m.state == DS_STATE_DISARMED) return unpack(LED_COLOR_SERVO_TEACH);
+  if (m.emptyMagBlink) {
+    return blinkOn(nowMs - emptyMagSinceMs) ? unpack(LED_COLOR_EMPTY_MAG) : Rgb();
+  }
   switch (m.state) {
     case DS_STATE_BOOT:
     case DS_STATE_CALIBRATING:
@@ -107,8 +95,8 @@ Rgb Leds::colorFor(const DisplayModel& m, uint32_t nowMs, uint32_t emptyMagSince
       return mix(unpack(LED_COLOR_PAIRING_A), unpack(LED_COLOR_PAIRING_B), pulseWave(inState));
     case DS_STATE_DISARMED:
       return unpack(LED_COLOR_DISARMED);
-    case DS_STATE_ARMED:   // a pull fires now: red; the next shot is not available yet: yellow
-      return unpack(m.fireReady ? LED_COLOR_ARMED_READY : LED_COLOR_ARMED_WAIT);
+    case DS_STATE_ARMED:
+      return unpack(m.fireMode == DS_FIRE_MODE_FULL ? LED_COLOR_ARMED_FULL : LED_COLOR_ARMED_SEMI);
     default:
       return Rgb();   // not a state: dark
   }
@@ -163,8 +151,8 @@ void Leds::show(bool forced) {
 }
 
 void Leds::update(uint32_t nowMs, uint32_t /*nowUs*/, const DisplayModel& model) {
-  // The empty-magazine double flash starts ON at the moment the flag rises (immediate feedback
-  // when the last dart goes), so remember when that was.
+  // The empty-magazine blink starts ON at the moment the flag rises (immediate feedback when
+  // the trigger is pulled on an empty magazine), so remember when that was.
   if (model.emptyMagBlink && !emptyMagWas_) emptyMagSinceMs_ = nowMs;
   emptyMagWas_ = model.emptyMagBlink;
 

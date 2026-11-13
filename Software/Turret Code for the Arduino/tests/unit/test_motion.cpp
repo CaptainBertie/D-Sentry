@@ -535,8 +535,12 @@ TEST(go_home_cruises_at_home_speed_and_stops_on_the_stored_step) {
   CHECK_NEAR(r.m.homeDeg(AXIS_TILT), 20.0f, stepDeg(AXIS_TILT));
   const int32_t homePan = tsteps(AXIS_PAN), homeTilt = tsteps(AXIS_TILT);
   // Away with the stick.
+  // Pan about 140 deg (under half a turn, so PAN_HOME_SHORTEST_PATH comes back the same way).
+  const uint64_t panUs = (uint64_t)(140.0f / PAN_MAX_DEG_PER_S * US_PER_S);
   r.m.setVelocity(-1.0f, 1.0f);
-  runFor(r.m, 1500 * US_PER_MS);
+  runFor(r.m, panUs);
+  r.m.setVelocity(0.0f, 1.0f);
+  if (panUs < 1500 * US_PER_MS) runFor(r.m, 1500 * US_PER_MS - panUs);
   r.m.setVelocity(0.0f, 0.0f);
   CHECK(runUntil(r.m, [&] { return settled(r.m); }, 5 * US_PER_S));
   CHECK(r.m.positionDeg(AXIS_PAN) < -60.0f);
@@ -714,7 +718,7 @@ TEST(move_targets_are_clamped_to_the_active_limits) {
 
 TEST(cal_ram_finds_the_stop_from_any_height) {
   const int32_t backoff = tstepsFor(AXIS_TILT, TILT_CAL_BACKOFF_DEG);
-  for (float h : {0.0f, 0.4f, 10.0f, 30.0f, 60.0f, 85.0f, 89.5f}) {
+  for (float h : {0.0f, 0.4f, 10.0f, 30.0f, TILT_RANGE_DEG + TILT_CAL_BACKOFF_DEG, TILT_CAL_MAX_TRAVEL_DEG - 0.5f}) {
     Rig r;
     hal_host::setTrueSteps(AXIS_PAN, 123);   // pan is not calibrated: untouched
     hal::stepSetPosition(AXIS_PAN, 77);

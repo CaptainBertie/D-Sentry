@@ -9,7 +9,7 @@ owner's tunables instead of copies (architecture.md rule 1: Python reads tunable
     cfg.PAN_STEPS_PER_DEG                # 22.222...      (arithmetic over other defines)
     cfg.TOGGLE_ACTIVE_LOW                # True           (bool)
     cfg.WIFI_SSID                        # 'CHANGE_ME'    (str, escapes decoded)
-    cfg.LED_COLOR_EMPTY_MAG              # 0x8000FF       (int; cfg.rgb(name) -> (128, 0, 255))
+    cfg.LED_COLOR_ARMED_FULL             # 0xFF6000       (int; cfg.rgb(name) -> (255, 96, 0))
     cfg.PIN_TOGGLE_POWER                 # RawToken('A0') (a str: Arduino names stay text)
     cfg.comment("LINK_TIMEOUT_MS")       # the // comment beside the define, continuation joined
     cfg.section("LINK_TIMEOUT_MS")       # '10. CONTROLLER / LINK'

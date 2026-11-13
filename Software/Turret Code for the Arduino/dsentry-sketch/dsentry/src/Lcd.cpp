@@ -134,17 +134,28 @@ bool armRow(const DisplayModel& m, char out[LCD_COLS + 1]) {
   return Lcd::layoutRow(LCD_TXT_ARMED, ammo.c_str(), out);
 }
 
-// SERVO ADJUST rows: "SERVO ADJUST" left, the commanded angle right-justified; then
-// "R:<rest> F:<fire>", the angles in force.
+// SERVO TEACH rows: "SERVO TEACH" left, the commanded angle right-justified; then
+// "R<rest>F<fire>P<prefire>C<clear>" (no spaces: all four fit 16 columns) with LCD_TXT_SERVO_UNSET for an angle not recorded this power-on.
 bool teachTopRow(const DisplayModel& m, char out[LCD_COLS + 1]) {
   Text deg;
   deg.addI(m.servoDeg);
-  return Lcd::layoutRow(LCD_TXT_SERVO_ADJUST, deg.c_str(), out);
+  return Lcd::layoutRow(LCD_TXT_SERVO_TEACH, deg.c_str(), out);
+}
+
+void teachAngle(Text& t, const char* label, bool recorded, int16_t deg) {
+  t.add(label);
+  if (recorded)
+    t.addI(deg);
+  else
+    t.add(LCD_TXT_SERVO_UNSET);
 }
 
 bool teachBottomRow(const DisplayModel& m, char out[LCD_COLS + 1]) {
   Text t;
-  t.add(LCD_TXT_SERVO_REST).addI(m.restDeg).add(' ').add(LCD_TXT_SERVO_FIRE).addI(m.fireDeg);
+  teachAngle(t, LCD_TXT_SERVO_REST, m.restRecorded, m.restDeg);
+  teachAngle(t, LCD_TXT_SERVO_FIRE, m.fireRecorded, m.fireDeg);
+  teachAngle(t, LCD_TXT_SERVO_PREFIRE, m.prefireRecorded, m.prefireDeg);
+  teachAngle(t, LCD_TXT_SERVO_CLEAR, m.clearRecorded, m.clearDeg);
   return Lcd::layoutRow(t.c_str(), "", out) && !t.cut();
 }
 
@@ -184,7 +195,7 @@ uint8_t checkOverflows(Debug* debug) {
   n += warnAlone(debug, "LCD_TXT_FAULT_OTHER", LCD_TXT_FAULT_OTHER);
   n += warnAlone(debug, "LCD_TXT_MODE_BT", LCD_TXT_MODE_BT);
   n += warnAlone(debug, "LCD_TXT_MODE_WIFI", LCD_TXT_MODE_WIFI);
-  n += warnAlone(debug, "LCD_TXT_SERVO_ADJUST", LCD_TXT_SERVO_ADJUST);
+  n += warnAlone(debug, "LCD_TXT_SERVO_TEACH", LCD_TXT_SERVO_TEACH);
 
   // Row 0: the arm texts beside the widest ammo text a full magazine gives.
   Text ammo;
@@ -204,20 +215,23 @@ uint8_t checkOverflows(Debug* debug) {
     }
   }
 
-  // SERVO ADJUST row 0: the adjust text beside the widest angle (every angle is 0..SERVO_SPAN_DEG).
+  // SERVO TEACH row 0: the teach text beside the widest angle (every angle is 0..SERVO_SPAN_DEG).
   Text widest;
   widest.addU(SERVO_SPAN_DEG);
   const size_t degLen = decimalDigits(SERVO_SPAN_DEG);
-  n += warnCombo(debug, ROW_TOP, LCD_TXT_SERVO_ADJUST, strlen(LCD_TXT_SERVO_ADJUST), widest.c_str(), degLen,
+  n += warnCombo(debug, ROW_TOP, LCD_TXT_SERVO_TEACH, strlen(LCD_TXT_SERVO_TEACH), widest.c_str(), degLen,
                  "angle cut");
-  // SERVO ADJUST row 1: "R:<n> F:<n>" at its widest.
-  const size_t teachRow1 = strlen(LCD_TXT_SERVO_REST) + degLen + 1 + strlen(LCD_TXT_SERVO_FIRE) + degLen;
+  // SERVO TEACH row 1: "R<n>F<n>P<n>C<n>" at its widest (an angle, or LCD_TXT_SERVO_UNSET if longer).
+  const size_t valueLen = degLen > strlen(LCD_TXT_SERVO_UNSET) ? degLen : strlen(LCD_TXT_SERVO_UNSET);
+  const size_t teachRow1 = strlen(LCD_TXT_SERVO_REST) + valueLen + strlen(LCD_TXT_SERVO_FIRE) + valueLen +
+                           strlen(LCD_TXT_SERVO_PREFIRE) + valueLen + strlen(LCD_TXT_SERVO_CLEAR) + valueLen;
   if (teachRow1 > LCD_COLS) {
     if (debug) {
       Debug::Line l;
-      l.add("LCD row 1: \"").add(LCD_TXT_SERVO_REST).add(widest.c_str()).add(' ').add(LCD_TXT_SERVO_FIRE)
-          .add(widest.c_str()).add("\" = ").addU((uint32_t)teachRow1).add(" > ").addU(LCD_COLS)
-          .add(" columns, servo adjust angles cut");
+      l.add("LCD row 1: \"").add(LCD_TXT_SERVO_REST).add(widest.c_str()).add(LCD_TXT_SERVO_FIRE)
+          .add(widest.c_str()).add(LCD_TXT_SERVO_PREFIRE).add(widest.c_str()).add(LCD_TXT_SERVO_CLEAR)
+          .add(widest.c_str()).add("\" = ")
+          .addU((uint32_t)teachRow1).add(" > ").addU(LCD_COLS).add(" columns, servo teach angles cut");
       debug->log(LOG_ERROR, l);
     }
     n++;

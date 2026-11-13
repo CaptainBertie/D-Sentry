@@ -169,13 +169,13 @@ const Action kPlainActions[] = {
     {"stop", TurretState::ShellCmd::STOP},       {"cal", TurretState::ShellCmd::CAL},
 };
 
-// The `servo` words that take no number (SERVO ADJUST; "teach" is its old name, kept as an alias);
-// `servo <whole degrees>` is SERVO_SET.
+// The `servo` words that take no number (SERVO TEACH); `servo <whole degrees>` is SERVO_SET.
 const Action kServoActions[] = {
-    {"adjust", TurretState::ShellCmd::SERVO_TEACH},  {"teach", TurretState::ShellCmd::SERVO_TEACH},
-    {"rest", TurretState::ShellCmd::SERVO_REST},     {"fire", TurretState::ShellCmd::SERVO_FIRE},
-    {"reset", TurretState::ShellCmd::SERVO_RESET},   {"stroke", TurretState::ShellCmd::SERVO_STROKE},
-    {"off", TurretState::ShellCmd::SERVO_OFF},
+    {"teach", TurretState::ShellCmd::SERVO_TEACH},   {"rest", TurretState::ShellCmd::SERVO_REST},
+    {"fire", TurretState::ShellCmd::SERVO_FIRE},     {"stroke", TurretState::ShellCmd::SERVO_STROKE},
+    {"off", TurretState::ShellCmd::SERVO_OFF},       {"prefire", TurretState::ShellCmd::SERVO_PREFIRE},
+    {"setprefire", TurretState::ShellCmd::SERVO_SETPREFIRE}, {"clear", TurretState::ShellCmd::SERVO_CLEAR},
+    {"setclear", TurretState::ShellCmd::SERVO_SETCLEAR},
 };
 
 const char* onOff(bool v) { return v ? "on" : "off"; }
@@ -435,7 +435,7 @@ void Debug::handleShellLine(const char* line) {
       }
     }
     shellRejected_++;
-    l.add("usage: servo adjust|<whole degrees>|rest|fire|reset|stroke|off (not run)");
+    l.add("usage: servo teach|<whole degrees>|rest|fire|setprefire|prefire|setclear|clear|stroke|off (not run)");
     reply(l);
     return;
   }
@@ -498,7 +498,7 @@ void Debug::help() {
   l.add("help: mag pan <deg> tilt <deg> home sethome stop cal");
   reply(l);
   l.clear();
-  l.add("help: servo adjust|<deg>|rest|fire|reset|stroke|off (SERVO ADJUST from DISARMED; pad: Menu)");
+  l.add("help: servo teach|<deg>|rest|fire|setprefire|prefire|setclear|clear|stroke|off (SERVO TEACH)");
   reply(l);
 }
 
@@ -511,12 +511,11 @@ void Debug::status() {
         .addU(t.refusals).add(" warn=").addU(warnings_);
     reply(l);
     l.clear();
-    // Where the angles in force come from: the saved record, config.h's (no record), or neither
-    // (adjusted, not saved: Menu in SERVO ADJUST saves them).
-    const bool atBoot = t.restDeg == t.bootAngles.rest && t.fireDeg == t.bootAngles.fire;
-    l.add("status servo=").add((int32_t)t.servoDeg).add(" adjust=").addBool(t.servoTeach).add(" rest=")
-        .add((int32_t)t.restDeg).add(" fire=").add((int32_t)t.fireDeg)
-        .add(!atBoot ? " (not saved)" : t.savedRecord ? " (saved)" : " (config.h)");
+    l.add("status servo=").add((int32_t)t.servoDeg).add(" teach=").addBool(t.servoTeach).add(" rest=")
+        .add((int32_t)t.restDeg).add(t.restRecorded ? " (recorded)" : " (config.h)").add(" fire=")
+        .add((int32_t)t.fireDeg).add(t.fireRecorded ? " (recorded)" : " (config.h)").add(" prefire=")
+        .add((int32_t)t.prefireDeg).add(t.prefireRecorded ? " (recorded)" : " (config.h)").add(" clear=")
+        .add((int32_t)t.clearDeg).add(t.clearRecorded ? " (recorded)" : " (config.h)");
     reply(l);
     l.clear();
   }

@@ -60,13 +60,27 @@ def sweep_ms(span_deg):
     return math.ceil(span_deg * cfg("MS_PER_S") / rate)
 
 
-# One trigger stroke at config.h's angles (Trigger.h): the sweep out, FIRE held
-# TRIGGER_FORWARD_MS, the sweep back, REST held TRIGGER_RETURN_MS; semi auto then waits
-# TRIGGER_COOLDOWN_MS before the next stroke may start.
-SWEEP_MS = sweep_ms(abs(cfg("TRIGGER_FIRE_ANGLE") - cfg("TRIGGER_REST_ANGLE")))
-STROKE_MS = SWEEP_MS + cfg("TRIGGER_FORWARD_MS") + SWEEP_MS + cfg("TRIGGER_RETURN_MS")
+# One shot at config.h's angles (Trigger.h), from PRE-FIRE with darts left: the sweep to FIRE,
+# FIRE held TRIGGER_FORWARD_MS, the sweep to REST, REST held TRIGGER_RETURN_MS, [with
+# TRIGGER_CLEAR_ENABLED: the sweep to CLEAR, held TRIGGER_CLEAR_HOLD_MS, the sweep to REST, held
+# TRIGGER_RETURN_MS again] (the shot counts: COUNT_MS), the sweep to PRE-FIRE, held
+# TRIGGER_CHAMBER_MS (the next shot available: STROKE_MS); semi auto then waits
+# TRIGGER_COOLDOWN_MS before the next stroke may start. The last dart ends at REST (COUNT_MS).
+# X (reload) sends the idle servo to PRE-FIRE and the next shot waits CHAMBER_S for it.
+SWEEP_MS = sweep_ms(abs(cfg("TRIGGER_FIRE_ANGLE") - cfg("TRIGGER_PREFIRE_ANGLE")))
+_CLEAR_MS = sweep_ms(abs(cfg("TRIGGER_CLEAR_ANGLE") - cfg("TRIGGER_REST_ANGLE")))
+COUNT_MS = (SWEEP_MS + cfg("TRIGGER_FORWARD_MS") + sweep_ms(abs(cfg("TRIGGER_FIRE_ANGLE") - cfg("TRIGGER_REST_ANGLE")))
+            + cfg("TRIGGER_RETURN_MS")
+            + ((_CLEAR_MS + cfg("TRIGGER_CLEAR_HOLD_MS") + _CLEAR_MS + cfg("TRIGGER_RETURN_MS"))
+               if cfg("TRIGGER_CLEAR_ENABLED") else 0))
+STROKE_MS = (COUNT_MS + sweep_ms(abs(cfg("TRIGGER_REST_ANGLE") - cfg("TRIGGER_PREFIRE_ANGLE")))
+             + cfg("TRIGGER_CHAMBER_MS"))
 STROKE_S = STROKE_MS / cfg("MS_PER_S")
+# Full auto while held (owner, 2026-11-04): every shot after the first starts from REST, so one
+# shot per BURST_MS (REST -> FIRE -> REST, the count), no PRE-FIRE visit in between.
+BURST_MS = COUNT_MS - SWEEP_MS + sweep_ms(abs(cfg("TRIGGER_FIRE_ANGLE") - cfg("TRIGGER_REST_ANGLE")))
 COOLDOWN_S = cfg("TRIGGER_COOLDOWN_MS") / cfg("MS_PER_S")
+CHAMBER_S = cfg("TRIGGER_CHAMBER_MS") / cfg("MS_PER_S")
 
 
 # Wall-clock slack added to every timeout (process start, Python scheduling).

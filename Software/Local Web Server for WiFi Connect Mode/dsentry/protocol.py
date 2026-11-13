@@ -220,8 +220,8 @@ DS_BTN_DPAD_UP = 0x40  # bit 6: d-pad up: unused
 DS_BTN_DPAD_DOWN = 0x80  # bit 7: d-pad down: go home
 DS_BTN_DPAD_LEFT = 0x100  # bit 8: d-pad left: set home
 DS_BTN_DPAD_RIGHT = 0x200  # bit 9: d-pad right: unused
-DS_BTN_START = 0x400  # bit 10: Menu (start): servo adjust when DISARMED (enter / save and leave)
-DS_BTN_BACK = 0x800  # bit 11: View (back): in servo adjust, config.h's REST / FIRE back in force; else unused
+DS_BTN_START = 0x400  # bit 10: Menu (start): unused
+DS_BTN_BACK = 0x800  # bit 11: View (back): unused
 DS_BTN_LS_CLICK = 0x1000  # bit 12: left stick click: shown on the dashboard, no turret action
 DS_BTN_RS_CLICK = 0x2000  # bit 13: right stick click: shown, no turret action
 DS_BTN_XBOX = 0x4000  # bit 14: Xbox (guide) button: shown, no turret action
@@ -229,7 +229,7 @@ DS_BTN_SHARE = 0x8000  # bit 15: Share button: shown, no turret action
 
 
 class Buttons(enum.IntFlag):
-    """ControlPacket.buttons and TelemetryPacket.padButtons (spec 3.2 mapping: A arm, B semi/full, X magazine, d-pad left set home, d-pad down go home; Menu enters SERVO ADJUST from DISARMED, where d-pad up/down, RB/LB, A, B, View and X set the trigger servo angles instead and Menu saves and leaves, TurretState.h). Bits 12-15 exist for the dashboard's controller view: a ControlPacket may carry them and the RA4M1 never acts on them."""
+    """ControlPacket.buttons and TelemetryPacket.padButtons (spec 3.2 mapping: A arm, B semi/full, X magazine, d-pad left set home, d-pad down go home). Bits 12-15 exist for the dashboard's controller view: a ControlPacket may carry them and the RA4M1 never acts on them."""
     A = 0x1
     B = 0x2
     X = 0x4
@@ -258,7 +258,7 @@ DS_TELEM_FLAG_CALIBRATED = 0x40  # bit 6: tilt calibration finished; tilt bounds
 DS_TELEM_FLAG_POWER_TOGGLE_ON = 0x80  # bit 7: power toggle (A0) reads on
 DS_TELEM_FLAG_MODE_TOGGLE_WIFI = 0x100  # bit 8: mode toggle (A1) reads WiFi
 DS_TELEM_FLAG_STALL_ENABLED = 0x200  # bit 9: stall detector active
-DS_TELEM_FLAG_EMPTY_MAG_BLINK = 0x400  # bit 10: empty-magazine double flash showing (ammo 0, DISARMED/ARMED)
+DS_TELEM_FLAG_EMPTY_MAG_BLINK = 0x400  # bit 10: empty-magazine blink showing
 DS_TELEM_FLAG_DRIVERS_ENABLED = 0x800  # bit 11: stepper drivers enabled (EN low)
 DS_TELEM_FLAG_ESP_LEGACY_FIRMWARE = 0x1000  # bit 12: the ESP32 answered AT+DSCAPS? with ERROR (old fork/stock)
 DS_TELEM_FLAG_LCD_PRESENT = 0x2000  # bit 13: an LCD answered on I2C

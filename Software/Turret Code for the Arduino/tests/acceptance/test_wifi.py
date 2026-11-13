@@ -14,9 +14,10 @@ from _sim import P, cfg, flag, rows, lcd_row, scaled, state_is
 SPEED = 5
 FULL_RT = cfg("TRIGGER_AXIS_RANGE")
 AXIS = cfg("JOY_AXIS_RANGE")
-STROKE_MS = S.STROKE_MS      # sweep out + FORWARD + sweep back + RETURN, from config.h
+STROKE_MS = S.STROKE_MS      # one shot's whole sequence (PRE-FIRE -> ... -> PRE-FIRE), from config.h
 STROKE_S = S.STROKE_S
-COOLDOWN_S = S.COOLDOWN_S    # semi auto, after each completed stroke
+COOLDOWN_S = S.COOLDOWN_S    # semi auto, after each shot's sequence
+BOOT_AMMO = cfg("TRIGGER_AMMO_AT_BOOT")
 TEL_PERIOD_MS = 1000.0 / cfg("TELEMETRY_WIFI_HZ")
 SCALE = P.DS_ANGLE_SCALE
 
@@ -64,6 +65,15 @@ class WifiCase(unittest.TestCase):
         m = self.drv.sink.mark()
         self.drv.tap(P.DS_BTN_A)
         return self.drv.wait(state_is("ARMED"), 1.0, m, "ARMED")
+
+    def load(self):
+        """X: the magazine to MAG_CAPACITY and the servo to PRE-FIRE, then its chambering time."""
+        m = self.drv.sink.mark()
+        self.drv.tap(P.DS_BTN_X)
+        t = self.drv.wait(lambda t: t.ammo == cfg("MAG_CAPACITY"), 1.0, m, "magazine loaded")
+        self.assertEqual(t.servoDeg, cfg("TRIGGER_PREFIRE_ANGLE"))
+        self.sim.sleep(S.CHAMBER_S)
+        return t
 
     def spin_up(self):
         m = self.drv.sink.mark()
@@ -117,9 +127,14 @@ class BootTests(WifiCase):
         # The barrel physically sits TILT_CAL_BACKOFF_DEG above the bottom stop it rammed, and the
         # firmware calls that tilt 0 (calibrated flag set).
         one_step = 1.0 / cfg("TILT_STEPS_PER_DEG")
-        self.assertAlmostEqual(float(st["tiltAboveStopDeg"]), cfg("TILT_CAL_BACKOFF_DEG"), delta=2 * one_step)
-        p = drv.sink.latest()
-        self.assertEqual(p.tiltCdeg, 0)
+        # Calibration done, the barrel then lifts TILT_BOOT_RAISE_DEG on its own (owner, 2026-11-04).
+        raise_deg = cfg("TILT_BOOT_RAISE_DEG")
+        self.assertGreaterEqual(float(st["tiltAboveStopDeg"]), cfg("TILT_CAL_BACKOFF_DEG") - 2 * one_step)
+        self.assertLessEqual(float(st["tiltAboveStopDeg"]), cfg("TILT_CAL_BACKOFF_DEG") + raise_deg + 2 * one_step)
+        p = drv.wait(lambda t: t.tiltVelCdegS == 0 and abs(t.tiltCdeg - raise_deg * P.DS_ANGLE_SCALE) <= one_step * P.DS_ANGLE_SCALE + 1,
+                     raise_deg / cfg("TILT_MAX_DEG_PER_S") + 2, drv.sink.mark(), "boot raise")
+        self.assertAlmostEqual(float(sim.status()["tiltAboveStopDeg"]), cfg("TILT_CAL_BACKOFF_DEG") + raise_deg,
+                               delta=2 * one_step)
         self.assertTrue(flag(p, P.DS_TELEM_FLAG_CALIBRATED))
         self.assertTrue(flag(p, P.DS_TELEM_FLAG_ESP_ALIVE))
         self.assertEqual(p.espMode, P.DS_ESP_MODE_WIFI)
@@ -155,7 +170,7 @@ class BootTests(WifiCase):
             self.assertTrue(r.startswith(cfg("LCD_TXT_MODE_WIFI") + " "), r)
             self.assertIn(cfg("LCD_TXT_PAIRING"), r)
         self.assertGreaterEqual(len(row1), 3, "the pairing dots do not cycle: %r" % row1)
-        self.assertEqual({rows(t)[0] for t in pairing}, {lcd_row(cfg("LCD_TXT_DISARMED"), ammo_text(cfg("MAG_CAPACITY")))})
+        self.assertEqual({rows(t)[0] for t in pairing}, {lcd_row(cfg("LCD_TXT_DISARMED"), ammo_text(BOOT_AMMO))})
         for t in pairing:
             self.assertEqual(t.ledR, t.ledG)                 # blue (0,0,b) to white (w,w,w)
             self.assertGreaterEqual(t.ledB, t.ledR)
@@ -169,11 +184,13 @@ class ConnectAndFireTests(WifiCase):
         self.assertEqual(t.linkSource, P.DS_LINK_SRC_WIFI)
         self.assertTrue(flag(t, P.DS_TELEM_FLAG_LINK_CONNECTED))
         t = self.settle()
-        self.assertEqual(rows(t), (lcd_row(cfg("LCD_TXT_DISARMED"), ammo_text(cfg("MAG_CAPACITY"))),
+        self.assertEqual(rows(t), (lcd_row(cfg("LCD_TXT_DISARMED"), ammo_text(BOOT_AMMO)),
                                    lcd_row(cfg("LCD_TXT_MODE_WIFI"), cfg("LCD_TXT_CONNECTED"))))
         self.assertEqual((t.ledR, t.ledG, t.ledB), scaled(cfg("LED_COLOR_DISARMED")))
         self.assertEqual(t.flywheelDuty, 0)
-        self.assertEqual(t.ammo, cfg("MAG_CAPACITY"))
+        # The boot magazine (TRIGGER_AMMO_AT_BOOT) with the servo home: REST at 0, else PRE-FIRE.
+        self.assertEqual(t.ammo, BOOT_AMMO)
+        self.assertEqual(t.servoDeg, cfg("TRIGGER_PREFIRE_ANGLE") if BOOT_AMMO else cfg("TRIGGER_REST_ANGLE"))
         self.assertGreater(t.ctrlRxHz, 0)
         # lastCtrlSeq echoes a recent ControlPacket seq of ours (the relay's latency measurement).
         self.assertLess((self.drv.sender.seq - t.lastCtrlSeq) % 256, cfg("CONTROL_PACKET_HZ") // 2)
@@ -186,6 +203,7 @@ class ConnectAndFireTests(WifiCase):
     def test_arm_semi_fire_ammo_and_rumble(self):
         sim, drv = self.sim, self.drv
         self.connect()
+        self.load()
         # Spec 3.2 / 11.6: arming is refused while the trigger is pulled (ARM_REQUIRES_TRIGGER_RELEASED).
         self.assertTrue(cfg("ARM_REQUIRES_TRIGGER_RELEASED"))
         drv.set(rt=FULL_RT)
@@ -198,13 +216,11 @@ class ConnectAndFireTests(WifiCase):
         sim.sleep(0.1)
         self.arm()
         t = self.settle()
-        # Owner, 2026-11-03: ARMED is yellow while a pull would not fire (here: flywheels off),
-        # red once it would; the LCD still shows the fire mode.
-        self.assertTrue(cfg("FIRE_REQUIRES_FLYWHEEL"))
-        self.assertEqual((t.ledR, t.ledG, t.ledB), scaled(cfg("LED_COLOR_ARMED_WAIT")))
+        self.assertEqual((t.ledR, t.ledG, t.ledB), scaled(cfg("LED_COLOR_ARMED_SEMI")))
         self.assertEqual(rows(t)[0], lcd_row(cfg("LCD_TXT_ARMED") + cfg("LCD_TXT_FIRE_SEMI"), ammo_text(cfg("MAG_CAPACITY"))))
 
         # FIRE_REQUIRES_FLYWHEEL: a pull with the flywheels off does nothing.
+        self.assertTrue(cfg("FIRE_REQUIRES_FLYWHEEL"))
         drv.set(rt=FULL_RT)
         sim.sleep(2 * STROKE_S)
         t = drv.sink.latest()
@@ -220,10 +236,6 @@ class ConnectAndFireTests(WifiCase):
         self.assertEqual(duties, sorted(duties))
         self.assertTrue(any(0 < d < cfg("FLYWHEEL_DUTY_255") for d in duties), duties)
         self.assertEqual(ready.flywheelDuty, cfg("FLYWHEEL_DUTY_255"))
-        # Spinning up: yellow; spun up: red (a pull would fire now).
-        self.assertIn(scaled(cfg("LED_COLOR_ARMED_WAIT")), [(t.ledR, t.ledG, t.ledB) for t in spin])
-        t = self.settle()
-        self.assertEqual((t.ledR, t.ledG, t.ledB), scaled(cfg("LED_COLOR_ARMED_READY")))
         on_at = spin[0].uptimeMs - TEL_PERIOD_MS
         full_at = next(t.uptimeMs for t in spin if t.flywheelDuty == cfg("FLYWHEEL_DUTY_255"))
         self.assertGreaterEqual(full_at - spin[0].uptimeMs, cfg("FLYWHEEL_RAMP_MS") - 2 * TEL_PERIOD_MS)
@@ -238,12 +250,8 @@ class ConnectAndFireTests(WifiCase):
         self.assertEqual(t.ammo, cfg("MAG_CAPACITY") - 1)
         stroke = [t for t in drv.sink.since(m) if flag(t, P.DS_TELEM_FLAG_STROKE_ACTIVE)]
         self.assertTrue(stroke)
-        # Spec 3.4 / 11.11, the owner's scheme: yellow during the stroke (the next shot is not
-        # available), red again after it.
-        self.assertIn(scaled(cfg("LED_COLOR_ARMED_WAIT")), [(t.ledR, t.ledG, t.ledB) for t in stroke])
-        self.assertNotIn(scaled(cfg("LED_COLOR_ARMED_READY")), [(t.ledR, t.ledG, t.ledB) for t in stroke[1:]])
-        t = self.settle()
-        self.assertEqual((t.ledR, t.ledG, t.ledB), scaled(cfg("LED_COLOR_ARMED_READY")))
+        # Spec 3.4 / 11.11: red during the stroke.
+        self.assertIn(scaled(cfg("LED_COLOR_FIRING")), [(t.ledR, t.ledG, t.ledB) for t in stroke])
         self.assertIn(cfg("TRIGGER_FIRE_ANGLE"), [t.servoDeg for t in stroke])
         # Holding does not re-fire; between the thresholds the trigger still reads pulled.
         sim.sleep(3 * STROKE_S)
@@ -278,22 +286,22 @@ class ConnectAndFireTests(WifiCase):
             self.assertEqual(s.wantMode, P.DS_RADIO_WIFI)
             self.assertEqual(s.state, P.DS_STATE_ARMED)
 
-    def test_full_auto_empty_magazine_keeps_firing_and_reset(self):
+    def test_full_auto_empty_magazine_lockout_and_reset(self):
         sim, drv = self.sim, self.drv
         self.connect()
+        self.load()
         self.arm()
         self.spin_up()
-        # Spec 3.2 / 11.7: B toggles semi/full; the LCD shows ARMED F. The LEDs show readiness, not
-        # the mode (owner, 2026-11-03): spun up and idle is red in both.
+        # Spec 3.2 / 11.7: B toggles semi/full; orange when armed in full auto.
         m = drv.sink.mark()
         drv.tap(P.DS_BTN_B)
         drv.wait(lambda t: t.fireMode == P.DS_FIRE_MODE_FULL, 1.0, m)
         t = self.settle()
-        self.assertEqual((t.ledR, t.ledG, t.ledB), scaled(cfg("LED_COLOR_ARMED_READY")))
+        self.assertEqual((t.ledR, t.ledG, t.ledB), scaled(cfg("LED_COLOR_ARMED_FULL")))
         self.assertEqual(rows(t)[0], lcd_row(cfg("LCD_TXT_ARMED") + cfg("LCD_TXT_FIRE_FULL"), ammo_text(cfg("MAG_CAPACITY"))))
 
-        # Spec 3.4 / 11.10: strokes back-to-back while held, no gap; the LEDs stay yellow from
-        # stroke to stroke, never red while it cycles.
+        # Spec 3.4 / 11.10: strokes back-to-back while held, no gap (after the first, straight from
+        # REST: one dart per S.BURST_MS).
         cap = cfg("MAG_CAPACITY")
         s0 = len(drv.sink.status)
         m = drv.sink.mark()
@@ -304,45 +312,37 @@ class ConnectAndFireTests(WifiCase):
         for t in frames:
             first.setdefault(t.ammo, t.uptimeMs)
         span = first[0] - first[cap - 1]
-        self.assertAlmostEqual(span, (cap - 1) * STROKE_MS, delta=2 * TEL_PERIOD_MS)
-        cycling = [t for t in frames if first[cap - 1] < t.uptimeMs and t.ammo > 0]
-        self.assertTrue(cycling)
-        self.assertNotIn(scaled(cfg("LED_COLOR_ARMED_READY")), [(t.ledR, t.ledG, t.ledB) for t in cycling])
-        # Owner, 2026-11-03 (FIRE_LOCKOUT_WHEN_EMPTY false): at 0 the trigger keeps firing, the count
-        # stays 0, and the LEDs double-flash LED_COLOR_EMPTY_MAG over the colour underneath.
-        self.assertFalse(cfg("FIRE_LOCKOUT_WHEN_EMPTY"))
+        self.assertAlmostEqual(span, (cap - 1) * S.BURST_MS, delta=2 * TEL_PERIOD_MS)   # REST -> FIRE -> REST
+        # Spec 11.12: at 0 the trigger is ignored (FIRE_LOCKOUT_WHEN_EMPTY) and the LEDs blink
+        # LED_COLOR_EMPTY_MAG while it is held.
+        self.assertTrue(cfg("FIRE_LOCKOUT_WHEN_EMPTY"))
         m = drv.sink.mark()
-        sim.sleep(1.5 * STROKE_S)                            # long enough for another whole stroke
+        sim.sleep(1.0)
         held = drv.sink.since(m)
-        self.assertTrue(all(t.ammo == 0 for t in held))
-        self.assertGreater(held[-1].shotsTotal, cap)          # still cycling
+        self.assertTrue(all(t.ammo == 0 and t.shotsTotal == cap for t in held))
+        self.assertTrue(all(t.servoDeg == cfg("TRIGGER_REST_ANGLE") for t in held))   # the last dart: at REST
         self.assertTrue(all(flag(t, P.DS_TELEM_FLAG_EMPTY_MAG_BLINK) for t in held))
-        # Released: the flash goes on (until X), now over red.
+        colours = {(t.ledR, t.ledG, t.ledB) for t in held}
+        self.assertIn(scaled(cfg("LED_COLOR_EMPTY_MAG")), colours)
+        self.assertGreaterEqual(len(colours), 2, "the empty-magazine colour does not blink")
+        # Released: the blink stops.
         drv.set(rt=0)
-        sim.sleep(2 * STROKE_S)
         m = drv.sink.mark()
-        sim.sleep(2 * cfg("LED_EMPTY_FLASH_PERIOD_MS") / 1000.0)
-        idle = drv.sink.since(m)
-        self.assertTrue(idle)
-        self.assertTrue(all(flag(t, P.DS_TELEM_FLAG_EMPTY_MAG_BLINK) and t.ammo == 0 for t in idle))
-        colours = {(t.ledR, t.ledG, t.ledB) for t in idle}
-        self.assertIn(scaled(cfg("LED_COLOR_ARMED_READY")), colours)
-        self.assertLessEqual(colours, {scaled(cfg("LED_COLOR_ARMED_READY")), scaled(cfg("LED_COLOR_EMPTY_MAG"))})
-        dry = drv.sink.latest().shotsTotal
-        # X restores MAG_CAPACITY and the flash stops; firing goes on; releasing mid-stroke finishes
-        # that stroke only.
+        t = drv.wait(lambda t: not flag(t, P.DS_TELEM_FLAG_EMPTY_MAG_BLINK), 0.5, m)
+        t = self.settle()
+        self.assertEqual((t.ledR, t.ledG, t.ledB), scaled(cfg("LED_COLOR_ARMED_FULL")))
+        # X restores MAG_CAPACITY and firing resumes; releasing mid-stroke finishes that stroke only.
         m = drv.sink.mark()
         drv.tap(P.DS_BTN_X)
-        drv.wait(lambda t: t.ammo == cap and not flag(t, P.DS_TELEM_FLAG_EMPTY_MAG_BLINK), 1.0, m)
-        t = self.settle()
-        self.assertEqual(rows(t)[0][-len(ammo_text(cap)):], ammo_text(cap))
-        self.assertEqual((t.ledR, t.ledG, t.ledB), scaled(cfg("LED_COLOR_ARMED_READY")))
+        t = drv.wait(lambda t: t.ammo == cap, 1.0, m)
+        self.assertEqual(t.servoDeg, cfg("TRIGGER_PREFIRE_ANGLE"))   # X: to PRE-FIRE
+        self.assertEqual(rows(self.settle())[0][-len(ammo_text(cap)):], ammo_text(cap))
         drv.set(rt=FULL_RT)
-        sim.sleep(1.5 * STROKE_S)
+        sim.sleep(S.CHAMBER_S + (S.COUNT_MS + S.BURST_MS / 2) / cfg("MS_PER_S"))   # into the second shot
         drv.set(rt=0)
         sim.sleep(2 * STROKE_S)
         t = drv.sink.latest()
-        self.assertEqual((t.shotsTotal, t.ammo), (dry + 2, cap - 2))
+        self.assertEqual((t.shotsTotal, t.ammo), (cap + 2, cap - 2))
         # Rumble while cycling: with RUMBLE_FULL_AUTO_CONTINUOUS each command lasts until the next
         # stroke starts, else RUMBLE_DURATION_MS.
         status = [s for s in drv.sink.status[s0:] if s.rumbleMs]
@@ -379,8 +379,8 @@ class LinkLossTests(WifiCase):
         self.assertGreaterEqual(lost_ms - last_rx, cfg("LINK_TIMEOUT_MS"))
         self.assertLessEqual(lost_ms - last_rx, cfg("LINK_TIMEOUT_MS") + poll_ms + line_ms + cfg("AT_REPLY_TIMEOUT_MS"))
         self.assertLessEqual(pairing_ms - lost_ms, 1)
-        # Everything stops: flywheels cut (FAILSAFE_STOP_FLYWHEEL), servo at rest, pan decelerates
-        # at its accel limit to 0.
+        # Everything stops: flywheels cut (FAILSAFE_STOP_FLYWHEEL), servo home (REST: the boot
+        # magazine, nothing loaded), pan decelerates at its accel limit to 0.
         self.assertTrue(cfg("FAILSAFE_STOP_FLYWHEEL"))
         stop_ms = 1000.0 * cfg("PAN_MAX_DEG_PER_S") / cfg("PAN_ACCEL_DEG_PER_S2")
         t = drv.wait(lambda t: t.state == P.DS_STATE_PAIRING and t.panVelCdegS == 0, (stop_ms + 500) / 1000.0, m)
@@ -447,8 +447,9 @@ class MotionTests(WifiCase):
 
         # Tilt: stick up (negative, JOY_INVERT_Y) raises the barrel to TILT_RANGE_DEG and never past
         # it, braking before it; the mechanism really stops there (no lost steps, no crash).
+        up_ry, down_ry = (-AXIS, AXIS - 1) if cfg("JOY_INVERT_Y") else (AXIS - 1, -AXIS)
         m = drv.sink.mark()
-        drv.set(ry=-AXIS)
+        drv.set(ry=up_ry)
         top = cfg("TILT_RANGE_DEG") * SCALE
         drv.wait(lambda t: t.tiltVelCdegS == 0 and t.tiltCdeg > top - SCALE, cfg("TILT_RANGE_DEG") / cfg("TILT_MAX_DEG_PER_S") + 2, m)
         up = drv.sink.since(m)
@@ -463,14 +464,14 @@ class MotionTests(WifiCase):
                                delta=0.5)
         # ... and down to 0, not into the panel.
         m = drv.sink.mark()
-        drv.set(ry=AXIS - 1)
+        drv.set(ry=down_ry)
         drv.wait(lambda t: t.tiltVelCdegS == 0 and t.tiltCdeg < SCALE, cfg("TILT_RANGE_DEG") / cfg("TILT_MAX_DEG_PER_S") + 2, m)
         self.assertGreaterEqual(min(t.tiltCdeg for t in drv.sink.since(m)), 0)
         self.assertAlmostEqual(float(sim.status()["tiltAboveStopDeg"]), cfg("TILT_CAL_BACKOFF_DEG"), delta=2 * one_step + 0.1)
         drv.set(ry=0)
 
         # Spec 3.2 / 11.5: d-pad left stores home, d-pad down returns there at HOME_SPEED_DEG_PER_S.
-        drv.set(ry=-AXIS // 2)
+        drv.set(ry=up_ry // 2)
         sim.sleep(0.6)
         drv.set(ry=0, rx=-AXIS // 2)
         sim.sleep(0.5)

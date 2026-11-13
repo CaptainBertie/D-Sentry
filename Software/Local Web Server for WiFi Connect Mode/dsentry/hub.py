@@ -255,7 +255,7 @@ def telemetry_events(prev: Optional[P.TelemetryPacket], cur: P.TelemetryPacket,
     elif cur.ammo == 0 and prev.ammo > 0:
         ev.append(("turret", "magazine empty"))
     if _flag(cur, _TF.EMPTY_MAG_BLINK) and not _flag(prev, _TF.EMPTY_MAG_BLINK):
-        ev.append(("turret", "empty magazine: LEDs flash purple until X"))
+        ev.append(("turret", "empty magazine: trigger locked out"))
     if _flag(cur, _TF.HOMING) != _flag(prev, _TF.HOMING):
         ev.append(("turret", _onoff(_flag(cur, _TF.HOMING), "go home started", "go home ended")))
     if (cur.homePanCdeg, cur.homeTiltCdeg) != (prev.homePanCdeg, prev.homeTiltCdeg):

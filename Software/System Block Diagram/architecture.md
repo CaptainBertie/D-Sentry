@@ -4,7 +4,10 @@
 > repo's layout (`D-SentryCode/`, `../firmware`, symlinked `config.h`, etc.). It's kept
 > here unedited for the engineering history and reasoning — the "owner decisions that
 > override the spec" section especially. For where things actually live in *this* repo,
-> see `../Custom Firmware/README.md` and `../Turret Code for the Arduino/README.md`.
+> see `../Custom Firmware/README.md` and `../Turret Code for the Arduino/README.md`. This
+> copy is from the `turret-live` branch — the branch actually flashed to the turret — not
+> `d-sentry`, which still carries an LED scheme and a servo flash-save feature that were
+> built, then rolled back before ever being flashed; see `../../DECISIONS.md` D26.
 
 This file is the contract every part of D-Sentry is built against. `D-SENTRY_SPEC.md` (repo root)
 is the original spec; where this file disagrees with it, this file wins, because each difference
@@ -20,8 +23,6 @@ below is a decision the owner made on 2026-11-03 or a fact research proved.
 | `dsentry/` folder | `D-SentryCode/` | Owner. |
 | `config.h` at the folder root, RA4M1 includes it | `D-SentryCode/config.h` is the only copy and the source of truth (wiring included: L298N on D9/D10/D11, servo D12, LEDs D13). The sketch reaches it through a symlink. Owner set the drivers to 1/8 (MS0+MS1 capped), matching `MICROSTEPS 8`. | Owner. |
 | Old dashboard mapping (A = semi/full, X = arm, 10 % trigger) | Spec §3.2 mapping (A = arm, B = semi/full, X = magazine reset, 60/40 % trigger). | Spec is newer. |
-| LEDs (§3.8): ARMED yellow / orange by fire mode, FIRING red, magenta blink with the trigger held at ammo 0; lockout at 0 (§3.4, `FIRE_LOCKOUT_WHEN_EMPTY` true) | ARMED red when a pull would fire now, yellow while the next shot is not available; a purple double flash at ammo 0 until X; firing continues at 0 (`FIRE_LOCKOUT_WHEN_EMPTY` false). SERVO ADJUST (was SERVO TEACH) on Menu, not Y. (Section 6.) | Owner, 2026-11-03. |
-| "Do not persist home position or settings to flash (RAM only, by design)" (§13) | SERVO ADJUST saves the trigger servo's REST and FIRE in the RA4M1's data flash (core EEPROM library, `ServoStore`), and every boot uses them in place of `config.h`'s; View in SERVO ADJUST restores `config.h`'s. The save (about 50 ms) is the one blocking call allowed in `loop()` (rule 2). Home and every other setting stay RAM only. (Section 6.) | Owner, 2026-11-03. |
 
 No hardware is attached during the build. Everything is compiled and tested on the Mac; the
 owner tunes on the bench afterwards.
@@ -81,9 +82,7 @@ modes of the generators fail the test run when a generated file is stale.
    pure presentation values (CSS, render geometry) are exempt but must be named constants.
 2. **No blocking in `loop()`.** No `delay()` outside `setup()`; no busy-wait longer than a few µs
    in any `update()`. Serial output goes through paced queues (section 4.3). No `printf`.
-   No serial writes from an ISR. One documented exception (owner, 2026-11-03): SERVO ADJUST's save,
-   `hal::storeSave()` (about 50 ms typical, hal.h), only in DISARMED with no stroke running and no
-   axis moving; the step interrupt keeps running through it.
+   No serial writes from an ISR.
 3. **LED brightness.** Every channel byte that reaches the LED hardware passes through exactly one
    function that scales by `LED_MAX_BRIGHTNESS / 255`; a `static_assert(LED_MAX_BRIGHTNESS <= 127)`
    and a runtime check (count + log) guard it.
@@ -274,9 +273,7 @@ Each module: `begin(...)`, `update(now…)`, small API. Pure logic; I/O only thr
   refusals), `stepQuietUs()`, `stepTakeStats()` (jitter max/mean permille, steps, refusals; resets),
   `ledsSetPixel/ledsShow`, `lcdPresent/lcdAddress/lcdBacklight/lcdWriteAt(col,row,char)` (one
   transaction; the HAL remembers the cursor and only sends a cursor command when needed),
-  `usbRead/usbWrite/usbTxFree/usbTxDropped`, `linkRead/linkWrite/linkTxIdle`,
-  `storeLoad/storeSave` (the settings store: `SETTINGS_STORE_MAX_BYTES` at `SETTINGS_STORE_ADDR` of
-  the data flash through the core's EEPROM library; `storeSave` blocks, see rule 2). The host fake
+  `usbRead/usbWrite/usbTxFree/usbTxDropped`, `linkRead/linkWrite/linkTxIdle`. The host fake
   (`sim/hal_host.cpp` + `sim/hal_host.h`) implements the same API with virtual time, a stepper
   physics model (integrates rates, honours bounds, tilt has a physical bottom stop where steps are
   lost), captured outputs, injectable inputs (toggles, A2 voltage), and byte pipes for USB/link.
@@ -323,16 +320,12 @@ Each module: `begin(...)`, `update(now…)`, small API. Pure logic; I/O only thr
   SWEEP_BACK to `TRIGGER_REST_ANGLE` → HOLD_REST for `TRIGGER_RETURN_MS` → ammo−1, floor 0; rate 0
   = jump), semi/full logic, semi cooldown (`TRIGGER_COOLDOWN_MS`), `abort()` (rest now, no
   sweep, no decrement), ammo/magazine, shot counter, rumble request per stroke (`RUMBLE_*`; full
-  auto with `RUMBLE_FULL_AUTO_CONTINUOUS` renews it each stroke), the per-shot LED hold
-  (`LED_FIRE_FLASH_MIN_MS`), `fireReady()` (a fresh pull would start a stroke now: `gate()` of the
-  current input with the trigger pulled is OPEN, so every gate counts, the semi cooldown
-  included, and the LED hold is over).
-- **Leds** — renders a `DisplayModel` with priority FAULT blink → SERVO ADJUST cyan → EMPTY_MAG
-  purple double flash (over the state colour) → state colour (ARMED: `LED_COLOR_ARMED_READY` red
-  when `fireReady`, else `LED_COLOR_ARMED_WAIT` yellow, so yellow through every stroke's sweeps
-  and holds and through the semi cooldown); pulses are sinusoidal over `LED_PULSE_PERIOD_MS` with
-  floor `LED_PULSE_MIN_FRACTION`; PAIRING crossfades A↔B; frame every `1000/LED_REFRESH_HZ` ms,
-  always re-sent; shows only in a step-quiet window (section 3). One brightness-clamp function.
+  auto with `RUMBLE_FULL_AUTO_CONTINUOUS` renews it each stroke), firing-LED hold
+  (`LED_FIRE_FLASH_MIN_MS`), empty-magazine indication.
+- **Leds** — renders a `DisplayModel` with priority FAULT blink → FIRING red → EMPTY_MAG blink →
+  state colour; pulses are sinusoidal over `LED_PULSE_PERIOD_MS` with floor
+  `LED_PULSE_MIN_FRACTION`; PAIRING crossfades A↔B; frame every `1000/LED_REFRESH_HZ` ms, always
+  re-sent; shows only in a step-quiet window (section 3). One brightness-clamp function.
 - **Lcd** — renders `DisplayModel` into two 16-char rows (spec §3.9), diffs against what the
   display holds, writes at most one character per `update()`, recomputes rows at most every
   `LCD_REFRESH_MS`, never clears per frame. Row layout: left text, right text right-justified,
@@ -341,17 +334,13 @@ Each module: `begin(...)`, `update(now…)`, small API. Pure logic; I/O only thr
   `LCD_PAIRING_DOT_MS`, appended after one space. Backlight off in OFF if configured.
 - **TurretState** — the state machine (spec §3.1) and all permission rules (section 6).
   Produces the `DisplayModel` and drives every other module.
-- **ServoStore** — SERVO ADJUST's record in the data flash: magic `SERVO_STORE_MAGIC` (2 bytes),
-  `SERVO_STORE_VERSION`, REST, FIRE (whole degrees), `ds_crc8` of the five; `load()` says OK,
-  BLANK (all 0xFF) or INVALID; `save()` writes through `hal::storeSave`. TurretState is its only user.
 - **Telemetry** — builds TelemetryPackets from const references to the modules; the controller
   block comes from `ControlLink::frame()` and the active source (`Telemetry::padBlock`).
 - **Debug** — log levels, stats line every `DEBUG_STATS_INTERVAL_MS` (loop rate, link rate, poll
   timeouts, CRC errors, seq gaps, packet loss %, step jitter max/mean, LED forced shows, USB TX
   drops), the bench shell: `help`, `status`, `arm`, `disarm`, `fire`, `fly on|off`, `mode semi|full`,
   `mag`, `pan <deg>`, `tilt <deg>`, `home`, `sethome`, `stop`, `cal`, `stall?`, `log <0-3>`,
-  `stats`, and SERVO ADJUST's `servo adjust` (alias `servo teach`) `|<deg>|rest|fire|reset|stroke|off`.
-  Shell actions go through TurretState and obey the same permissions as the controller.
+  `stats`. Shell actions go through TurretState and obey the same permissions as the controller.
 
 ## 6. Behaviour decisions where the spec is silent
 
@@ -363,15 +352,30 @@ Each module: `begin(...)`, `update(now…)`, small API. Pure logic; I/O only thr
   `ARM_REQUIRES_TRIGGER_RELEASED` is false) never fires until the trigger is released and pulled.
 - **Semi:** a pull that started while ARMED but before the flywheel was ready fires once when it
   becomes ready, if still held. **Full:** strokes back-to-back while held and permitted.
-- **Stroke, ammo and semi cooldown** (owner, 2026-11-03): the servo glides REST → FIRE and back at
-  `TRIGGER_SWEEP_DEG_PER_S` with a `TRIGGER_FORWARD_MS` / `TRIGGER_RETURN_MS` hold at each end (a
-  hobby servo has no position feedback; the glide is slower than the servo, so "complete" is
-  true); ammo − 1 only when the whole stroke has completed, never on an abort. In semi auto no
-  stroke starts until `TRIGGER_COOLDOWN_MS` after the last one completed: a counting pull still
-  held then fires, one let go before never does; the shell's `fire` is refused meanwhile. Full
-  auto has no cooldown.
-- **Link loss / disarm / power off / fault mid-stroke:** servo to rest now, stroke aborted, no
-  decrement; flywheels cut per the spec flags; motion stopped (decelerated at the accel limit, never
+- **Stroke, ammo and semi cooldown** (owner, 2026-11-03): the servo glides at
+  `TRIGGER_SWEEP_DEG_PER_S` with a hold at each end (a hobby servo has no position feedback; the
+  glide is slower than the servo, so "complete" is true); ammo − 1 only once the pusher is back at
+  REST (next bullet), never on an abort. In semi auto no stroke starts until
+  `TRIGGER_COOLDOWN_MS` after the last shot's sequence ended: a counting pull still held then
+  fires, one let go before never does; the shell's `fire` is refused meanwhile. Full auto has no
+  cooldown.
+- **Shot sequence, PRE-FIRE, CLEAR and boot ammo** (owner, 2026-11-04): the servo waits at
+  `TRIGGER_PREFIRE_ANGLE` while ammo > 0 and at REST at 0. A shot glides PRE-FIRE → FIRE (hold
+  `TRIGGER_FORWARD_MS`) → REST (hold `TRIGGER_RETURN_MS`), with `TRIGGER_CLEAR_ENABLED` (off by
+  default) then → `TRIGGER_CLEAR_ANGLE` (hold `TRIGGER_CLEAR_HOLD_MS`) → REST (hold
+  `TRIGGER_RETURN_MS` again); ammo − 1, then → PRE-FIRE (hold `TRIGGER_CHAMBER_MS`) if ammo > 0,
+  at `TRIGGER_SWEEP_DEG_PER_S` (600, 0 = jump); the firing flag covers the whole sequence and the
+  semi cooldown counts from its end. Boot and every power-toggle reboot: ammo
+  `TRIGGER_AMMO_AT_BOOT` (0), servo at REST; X reloads and moves it to PRE-FIRE, with
+  `TRIGGER_CHAMBER_MS` before a shot. SERVO TEACH also records PRE-FIRE (d-pad right) and CLEAR
+  (View, either setting), toggles the flywheels with d-pad left (cut when it ends), and its test
+  shot runs the whole sequence. Full auto while held: after the first shot each next one starts
+  straight from REST (REST → FIRE → REST, no PRE-FIRE visit or chamber hold, CLEAR kept if
+  enabled); released, the running stroke finishes to REST and then chambers to PRE-FIRE. In
+  ARMED, d-pad up toggles the flywheel latch (LB release does not
+  cut it; disarm, link loss, power off and faults do as before); in DISARMED it does nothing.
+- **Link loss / disarm / power off / fault mid-stroke:** servo home (PRE-FIRE, or REST at ammo 0)
+  now, stroke aborted, no decrement; flywheels cut per the spec flags; motion stopped (decelerated at the accel limit, never
   past a limit).
 - **Reconnection always lands in DISARMED** (spec). `FAILSAFE_DISARM_ON_LOSS = false` therefore
   cannot restore ARMED; it is reported at boot as "ignored" and listed for the owner.
@@ -381,37 +385,8 @@ Each module: `begin(...)`, `update(now…)`, small API. Pure logic; I/O only thr
   (opposite to its motion), FAULT for `STALL_FAULT_HOLD_MS` from the stall, then the previous arm
   state (or PAIRING if the link dropped meanwhile). Stall events during `CAL_RAM` calibration are
   expected and ignored.
-- **LEDs (owner, 2026-11-03).** ARMED is red when a pull would fire right now and yellow while the
-  next shot is not available (`Trigger::fireReady()`: every gate, the stroke with its sweeps and
-  holds and its `LED_FIRE_FLASH_MIN_MS` hold, the flywheel spin-up, the semi
-  `TRIGGER_COOLDOWN_MS`); semi / full is shown on the LCD only.
-  TurretState publishes the model before `Trigger::update()`, and Trigger starts the next
-  full-auto stroke in the update that completes the last, so a held trigger stays yellow with no
-  red frame between strokes.
-- **Empty magazine (owner, 2026-11-03).** `FIRE_LOCKOUT_WHEN_EMPTY` is false: the turret keeps
-  firing at ammo 0 and the count stays 0. Whenever ammo is 0 in DISARMED or ARMED the LEDs show a
-  repeating purple double flash (`LED_EMPTY_FLASH_ON_MS` flash, `LED_EMPTY_FLASH_GAP_MS` of the
-  state colour, a second flash, the state colour for the rest of `LED_EMPTY_FLASH_PERIOD_MS`,
-  phase 0 when ammo reached 0) until X; SERVO ADJUST's cyan and FAULT win over it.
-- **SERVO ADJUST** (TurretState.h; SERVO TEACH until 2026-11-03) is entered with **Menu**
-  (`DS_BTN_START`), only from DISARMED, and left with Menu again; Y is unused (no action, never
-  refused). Inside: d-pad ±`SERVO_ADJUST_STEP_SMALL_DEG`, RB / LB ±`SERVO_ADJUST_STEP_LARGE_DEG`,
-  A records REST, B FIRE, X one test stroke (the slow sweep, no dart counted), **View**
-  (`DS_BTN_BACK`) puts `config.h`'s REST and FIRE back in force; flywheels cut, no arming or firing;
-  LCD `SERVO ADJUST <angle>` / `R:<rest> F:<fire>` (the angles in force), LEDs cyan.
-- **SERVO ADJUST saves (owner, 2026-11-03, overriding the spec's "settings RAM only").** Boot loads
-  ServoStore's record: valid, its REST / FIRE replace `config.h`'s for the run; blank or invalid,
-  `config.h`'s (the boot log says which). Leaving with Menu (or the shell's `servo adjust` /
-  `servo off`) saves the angles in force when they differ from the boot angles, and they become the
-  boot angles, so the power toggle's reboot keeps them; unchanged, nothing is written. Menu is
-  refused (`REFUSED_MOVING`) while an axis moves, because the save blocks `loop()` (rule 2) and with
-  it the motion planner; a running test stroke is aborted before the save. Leaving any other way
-  (link loss, the mode toggle, power off, a fault, a state change) does not save: changed angles
-  stay in force for the run only, and power off returns to the boot angles. A save whose read-back
-  fails is logged and counted; the angles then stay for the run only. Typical blocking time about
-  50 ms (RA4M1 datasheet table 2.73 at the 24 MHz flash clock: 1 KB erase plus 1024 one-byte
-  programs); the datasheet maximum, 0.6-0.75 s, would exceed `LINK_TIMEOUT_MS` and cost a link loss
-  (into PAIRING, the angles already saved).
+- **Empty magazine** blink uses `LED_FAULT_BLINK_MS` and shows while ARMED, ammo 0, lockout on and
+  the trigger pulled.
 - Rumble per shot is requested when the stroke starts.
 
 ## 7. PC side

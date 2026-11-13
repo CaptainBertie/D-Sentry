@@ -150,13 +150,11 @@ bench console or the relay on the USB cable; *(radio)* items need Part A6.
   `tap down` (`going home`): it returns at 45°/s and stops on the stored spot. Again, and
   `stick 0.3 0` halfway: the move stops (dashboard *State* "Homing" clears).
   Mac: `accept_05_home_set_go_home_and_stick_cancels`.
-- [ ] **6. Arm.** `tap a`: ARMED, yellow (the flywheels are off, so a pull would not fire; red
-  once `hold lb` has spun them up), LCD `ARMED S`; `tap a`: DISARMED, green. `hold rt`,
+- [ ] **6. Arm.** `tap a`: ARMED, yellow, LCD `ARMED S`; `tap a`: DISARMED, green. `hold rt`,
   `tap a`: refused (`A (arm): refused: trigger held`), stays green; `release rt`.
   Mac: `accept_06_a_arms_and_disarms_and_arm_refused_while_the_trigger_is_held`.
-- [ ] **7. Fire mode.** ARMED: `tap b` turns the LCD `ARMED F`; again: `ARMED S`. The LEDs do not
-  change with the mode (they show red / yellow for ready / not ready). B also works while
-  DISARMED (LEDs stay green).
+- [ ] **7. Fire mode.** ARMED: `tap b` turns the LEDs orange and the LCD `ARMED F`; again: yellow,
+  `ARMED S`. B also works while DISARMED (LEDs stay green).
   Mac: `accept_07_b_toggles_semi_full_in_any_state`.
 - [ ] **8. Flywheels.** DISARMED: `hold lb` does nothing. ARMED: `hold lb`, the wheels ramp over
   0.4 s; `release lb` stops them. ENA duty ≈ 113 ÷ 255 = 44 %: a multimeter on D10 reads about
@@ -170,17 +168,13 @@ bench console or the relay on the USB cable; *(radio)* items need Part A6.
   a second (1194 ms each at REST 180 / FIRE 55), ammo down one per stroke; `trigger 0`
   mid-stroke: that stroke finishes, then it stops.
   Mac: `accept_10_full_auto_back_to_back_and_release_finishes_the_stroke`.
-- [ ] **11. Per-stroke feedback.** ARMED and spun up the LEDs are red. Slow-motion video: all 8
-  LEDs yellow from each stroke's start for the whole stroke (at least 120 ms), then red again;
-  in full auto with the trigger held they stay yellow, with no red between strokes. The bench
-  console prints one `status: ... rumble #N (200/120, 80 ms)` line per stroke.
+- [ ] **11. Per-stroke feedback.** Slow-motion video: all 8 LEDs red for at least 120 ms per
+  stroke. The bench console prints one `status: ... rumble #N (200/120, 80 ms)` line per stroke.
   *(radio)*: the pad rumbles (Part C4).
-  Mac: `accept_11_each_stroke_shows_yellow_then_red_and_sends_one_rumble`,
-  `full_auto_held_stays_yellow_between_strokes`.
-- [ ] **12. Empty magazine.** Fire until ammo 0: the LEDs flash purple twice every second over
-  red / yellow (green once disarmed), and the trigger still fires (`FIRE_LOCKOUT_WHEN_EMPTY`
-  false; the count stays 0). `tap x`: ammo 15, the flashing stops.
-  Mac: `accept_12_empty_magazine_keeps_firing_flashes_purple_and_x_restores`.
+  Mac: `accept_11_each_stroke_shows_red_and_sends_one_rumble`.
+- [ ] **12. Empty magazine.** Fire until ammo 0: the trigger does nothing, the LEDs blink magenta
+  while it is held. `tap x`: ammo 15, firing works again.
+  Mac: `accept_12_empty_magazine_locks_out_blinks_magenta_and_x_restores`.
 - [ ] **13. Link loss.** ARMED, wheels on, stick held. Then `disconnect` (or stop the relay, or
   pull the USB cable with the 9 V battery in): within 0.25 s (`LINK_TIMEOUT_MS`) the turret
   starts braking at its acceleration limit (from full pan speed that takes about another 0.25 s),

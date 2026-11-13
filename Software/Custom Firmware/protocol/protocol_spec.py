@@ -227,9 +227,7 @@ BITS = [
         "prefix": "DS_BTN_",
         "width": 16,
         "doc": "ControlPacket.buttons and TelemetryPacket.padButtons (spec 3.2 mapping: A arm, "
-               "B semi/full, X magazine, d-pad left set home, d-pad down go home; Menu enters "
-               "SERVO ADJUST from DISARMED, where d-pad up/down, RB/LB, A, B, View and X set the "
-               "trigger servo angles instead and Menu saves and leaves, TurretState.h). Bits 12-15 "
+               "B semi/full, X magazine, d-pad left set home, d-pad down go home). Bits 12-15 "
                "exist for the dashboard's controller view: a ControlPacket may carry them and "
                "the RA4M1 never acts on them.",
         "bits": [
@@ -243,8 +241,8 @@ BITS = [
             ("dpadDown", 7, "d-pad down: go home"),
             ("dpadLeft", 8, "d-pad left: set home"),
             ("dpadRight", 9, "d-pad right: unused"),
-            ("start", 10, "Menu (start): servo adjust when DISARMED (enter / save and leave)"),
-            ("back", 11, "View (back): in servo adjust, config.h's REST / FIRE back in force; else unused"),
+            ("start", 10, "Menu (start): unused"),
+            ("back", 11, "View (back): unused"),
             ("lsClick", 12, "left stick click: shown on the dashboard, no turret action"),
             ("rsClick", 13, "right stick click: shown, no turret action"),
             ("xbox", 14, "Xbox (guide) button: shown, no turret action"),
@@ -267,7 +265,7 @@ BITS = [
             ("powerToggleOn", 7, "power toggle (A0) reads on"),
             ("modeToggleWifi", 8, "mode toggle (A1) reads WiFi"),
             ("stallEnabled", 9, "stall detector active"),
-            ("emptyMagBlink", 10, "empty-magazine double flash showing (ammo 0, DISARMED/ARMED)"),
+            ("emptyMagBlink", 10, "empty-magazine blink showing"),
             ("driversEnabled", 11, "stepper drivers enabled (EN low)"),
             ("espLegacyFirmware", 12, "the ESP32 answered AT+DSCAPS? with ERROR (old fork/stock)"),
             ("lcdPresent", 13, "an LCD answered on I2C"),

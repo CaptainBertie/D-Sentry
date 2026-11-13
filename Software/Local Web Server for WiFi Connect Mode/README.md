@@ -86,10 +86,9 @@ follows the system. It shows:
 - beside it, a CONTROLLER MAP: a drawing of the Xbox controller with what each control does on
   this turret (spec 3.2 as built). A held button glows, the sticks move (with the `JOY_DEADZONE`
   ring), LT and RT fill (RT with its pull and release points). The labels come from `config.h`
-  (`FLYWHEEL_HOLD_MODE`, the `SERVO_ADJUST_STEP_*` nudges, `TRIGGER_REST_ANGLE` /
-  `TRIGGER_FIRE_ANGLE`). Menu is "Servo adjust"; the map switches to the servo adjust mapping
-  (Menu "Save & exit", View "Reset to config.h", A / B record REST / FIRE, X test stroke, the d-pad
-  and bumpers nudge, Y not used) when LCD row 0 starts with `LCD_TXT_SERVO_ADJUST`. It greys what the turret's state refuses, for example RT while not ARMED.
+  (`FLYWHEEL_HOLD_MODE`, the `SERVO_TEACH_STEP_*` nudges, `TRIGGER_REST_ANGLE` /
+  `TRIGGER_FIRE_ANGLE`). The map switches to the servo teach mapping when LCD row 0 starts with
+  `LCD_TXT_SERVO_TEACH`. It greys what the turret's state refuses, for example RT while not ARMED.
   It is lit from the same pad as the CONTROLLER panel. On a narrow screen it stacks below the
   turret and lists the labels under the drawing;
 - state, fault, fire mode, ammo, flywheel and trigger;

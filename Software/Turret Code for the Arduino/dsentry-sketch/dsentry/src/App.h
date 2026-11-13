@@ -12,8 +12,7 @@
 // loop(): hal::service() between modules (the USB queue drains at most one byte per call, so
 // it must run often), ControlLink, Inputs, StallDetector, one shell line (Debug -> TurretState,
 // so a shell action lands before this loop's decisions), TurretState, Trigger, Flywheel,
-// Motion, Leds, Lcd, Telemetry, Debug. Nothing in it blocks but SERVO ADJUST's save (TurretState.h:
-// hal::storeSave, about 50 ms, in DISARMED with nothing moving).
+// Motion, Leds, Lcd, Telemetry, Debug. Nothing in it blocks.
 //
 // SPDX-License-Identifier: MIT
 #pragma once
@@ -50,7 +49,7 @@ class App {
 
   // setup(): may block (LCD init ~1 s); nothing after it does.
   void begin();
-  // loop(): one pass over every module, never blocking (but SERVO ADJUST's save, see above).
+  // loop(): one pass over every module, never blocking.
   void loop();
 
   // For the host tests and dsentry_sim.

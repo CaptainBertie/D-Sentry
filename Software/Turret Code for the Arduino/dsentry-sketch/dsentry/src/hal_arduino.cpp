@@ -27,9 +27,6 @@
 //     disassembly evidence). UART::write() spins until its bytes are in the hardware, so all
 //     output goes through TxQueue and service(): one write() call per port per service(),
 //     never while the previous burst is still in the transmitter.
-//   - Settings store: the core's EEPROM library on the 8 KB data flash (storeLoad / storeSave at
-//     the end of this file). Code flash programming stays disabled in the core's FSP config, and
-//     data flash P/E leaves code flash readable, so interrupts run during the blocking save.
 //   - LiquidCrystal_I2C 1.1.2 is used for init() and backlight() in setup() only. init() calls
 //     Wire.begin(), which resets the clock to 100 kHz, so setClock / setWireTimeout come after.
 //     Every run-time LCD transaction checks Wire.endTransmission(); a failure (unplugged LCD,
@@ -41,12 +38,10 @@
 
 #include <Arduino.h>
 #include <Adafruit_NeoPixel.h>
-#include <EEPROM.h>
 #include <FspTimer.h>
 #include <LiquidCrystal_I2C.h>
 #include <Wire.h>
 #include <pwm.h>
-#include <string.h>
 
 #include "LcdInit.h"
 #include "TxQueue.h"
@@ -65,13 +60,6 @@ static_assert(LINK_TX_BUFFER_BYTES >= DS_AT_DST_LINE_LEN, "the link queue must h
 static_assert(SERIAL_TX_SLACK_BYTES <= SCI_FIFO_DEPTH, "drainTo's burst buffer holds one SCI_FIFO_DEPTH burst");
 static_assert(GPT_CLOCK_HZ % US_PER_S == 0, "GPT counts per microsecond must be whole");
 static_assert(LED_MAX_BRIGHTNESS <= LED_BRIGHTNESS_LIMIT, "spec 3.8: LED brightness ceiling");
-// The variant's data flash: FLASH_TOTAL_SIZE bytes in FLASH_BLOCK_SIZE erase blocks. One block
-// holds the whole store, so a save erases and programs one block (hal.h's blocking time).
-static_assert(SETTINGS_STORE_ADDR + SETTINGS_STORE_MAX_BYTES <= FLASH_TOTAL_SIZE,
-              "the settings store must lie inside the data flash");
-static_assert(SETTINGS_STORE_ADDR / FLASH_BLOCK_SIZE ==
-                  (SETTINGS_STORE_ADDR + SETTINGS_STORE_MAX_BYTES - 1) / FLASH_BLOCK_SIZE,
-              "the settings store must not cross a data flash erase block");
 
 namespace {
 
@@ -327,12 +315,6 @@ size_t readFrom(UART& port, uint8_t* buf, size_t cap) {
 }
 
 hal::BeginReport g_report;
-
-// ---- settings store ----
-// The image hal::storeSave() puts in one EEPROM.put() (see storeSave below).
-struct StoreImage {
-  uint8_t bytes[SETTINGS_STORE_MAX_BYTES];
-};
 
 }  // namespace
 
@@ -622,33 +604,6 @@ bool linkWrite(const uint8_t* data, size_t len) { return g_linkTx.push(data, len
 bool linkTxIdle() { return g_linkTx.idle(micros()); }
 size_t linkTxFree() { return g_linkTx.freeBytes(); }
 uint32_t linkTxDropped() { return g_linkTx.dropped(); }
-
-// ---- settings store ---------------------------------------------------------------------------------------------
-// The core's EEPROM library: EEPROM.h over virtualEEPROM and DataFlashBlockDevice (BlockDevices
-// library), the FSP's r_flash_lp with background operation off, so every call polls the flash
-// until it is done. EEPROM.read() reads one memory-mapped byte. EEPROM.put() of one object reads
-// its 1 KB block into a heap page, changes the differing bytes there, then erases the block (only
-// when a changed byte was not blank) and programs all 1 KB once. EEPROM.write() of single bytes
-// would erase and program the block once per byte, so the save is ONE put() of a fixed-size image
-// whose bytes past n are what the flash holds already. The timing is in hal.h (about 50 ms).
-bool storeLoad(void* dst, size_t n) {
-  if (dst == nullptr || n > SETTINGS_STORE_MAX_BYTES) return false;
-  uint8_t* d = static_cast<uint8_t*>(dst);
-  for (size_t i = 0; i < n; i++) d[i] = EEPROM.read((int)(SETTINGS_STORE_ADDR + i));
-  return true;
-}
-
-bool storeSave(const void* src, size_t n) {
-  if (src == nullptr || n == 0 || n > SETTINGS_STORE_MAX_BYTES) return false;
-  StoreImage image;
-  EEPROM.get(SETTINGS_STORE_ADDR, image);
-  memcpy(image.bytes, src, n);
-  EEPROM.put(SETTINGS_STORE_ADDR, image);   // blocks: erase + program of the 1 KB block
-  const uint8_t* s = static_cast<const uint8_t*>(src);
-  for (size_t i = 0; i < n; i++)
-    if (EEPROM.read((int)(SETTINGS_STORE_ADDR + i)) != s[i]) return false;   // e.g. no heap page
-  return true;
-}
 
 }  // namespace hal
 

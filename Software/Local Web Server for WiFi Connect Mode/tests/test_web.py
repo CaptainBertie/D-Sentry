@@ -11,7 +11,6 @@ end-to-end test_demo_keyboard_drives_then_deadman_goes_neutral."""
 import http.client
 import json
 import os
-import shutil
 import signal
 import socket
 import subprocess
@@ -35,8 +34,8 @@ SET = ST.Settings.load(S.CONFIG_H)
 DEFL = round(SET.keyboard_deflection * SET.joy_axis_range)
 # what the CONTROLLER MAP panel's labels and refusals are built from (all from config.h via /config)
 CMAP_CONFIG_NAMES = ("FLYWHEEL_HOLD_MODE", "FLYWHEEL_REQUIRES_ARMED", "FIRE_REQUIRES_FLYWHEEL",
-                     "FIRE_LOCKOUT_WHEN_EMPTY", "ARM_REQUIRES_TRIGGER_RELEASED", "LCD_TXT_SERVO_ADJUST",
-                     "SERVO_ADJUST_STEP_SMALL_DEG", "SERVO_ADJUST_STEP_LARGE_DEG", "TRIGGER_REST_ANGLE",
+                     "FIRE_LOCKOUT_WHEN_EMPTY", "ARM_REQUIRES_TRIGGER_RELEASED", "LCD_TXT_SERVO_TEACH",
+                     "SERVO_TEACH_STEP_SMALL_DEG", "SERVO_TEACH_STEP_LARGE_DEG", "TRIGGER_REST_ANGLE",
                      "TRIGGER_FIRE_ANGLE", "TRIGGER_PRESS_THRESHOLD", "TRIGGER_RELEASE_THRESHOLD", "JOY_DEADZONE",
                      "JOY_AXIS_RANGE", "TRIGGER_AXIS_RANGE", "MAG_CAPACITY")
 
@@ -121,7 +120,7 @@ class ServerTests(unittest.TestCase):
 
     def test_page_has_the_controller_map_panel(self):
         """The CONTROLLER MAP sits in the turret's row, right after the 3D view, and builds its
-        labels from /config (servo adjust text included) instead of copies in the page."""
+        labels from /config (servo teach text included) instead of copies in the page."""
         page = W.PAGE_PATH.read_text(encoding="utf-8")
         row = page.index('<div class="top-row">')
         end = page.index("</section>\n  </div>", row)                  # the row's last panel closes it
@@ -133,8 +132,8 @@ class ServerTests(unittest.TestCase):
             self.assertIn(needle, page, needle)
         for name in CMAP_CONFIG_NAMES:
             self.assertIn(name, page, name)
-        # adjust mode is detected from config.h's text, never a copy of it
-        self.assertNotIn(SET.cfg["LCD_TXT_SERVO_ADJUST"], page)
+        # teach mode is detected from config.h's text, never a copy of it
+        self.assertNotIn(SET.cfg["LCD_TXT_SERVO_TEACH"], page)
         self.assertTrue(page.isascii())
 
     def test_config_carries_the_controller_map_values(self):
@@ -144,102 +143,25 @@ class ServerTests(unittest.TestCase):
                 self.assertIn(name, W.PAGE_CONFIG_NAMES)
                 self.assertEqual(cfg["config"][name], SET.cfg[name])
         self.assertIsInstance(cfg["config"]["FLYWHEEL_HOLD_MODE"], bool)
-        self.assertIsInstance(cfg["config"]["LCD_TXT_SERVO_ADJUST"], str)
-        self.assertTrue(cfg["config"]["LCD_TXT_SERVO_ADJUST"])
-        for name in ("SERVO_ADJUST_STEP_SMALL_DEG", "SERVO_ADJUST_STEP_LARGE_DEG", "TRIGGER_REST_ANGLE", "TRIGGER_FIRE_ANGLE"):
+        self.assertIsInstance(cfg["config"]["LCD_TXT_SERVO_TEACH"], str)
+        self.assertTrue(cfg["config"]["LCD_TXT_SERVO_TEACH"])
+        for name in ("SERVO_TEACH_STEP_SMALL_DEG", "SERVO_TEACH_STEP_LARGE_DEG", "TRIGGER_REST_ANGLE", "TRIGGER_FIRE_ANGLE"):
             self.assertIsInstance(cfg["config"][name], int, name)
         for name in ("TRIGGER_PRESS_THRESHOLD", "TRIGGER_RELEASE_THRESHOLD", "JOY_DEADZONE"):
             self.assertTrue(0.0 < cfg["config"][name] < 1.0, name)
 
-    def cmap_js(self, script):
-        """Runs the page's own CONTROLLER MAP logic (CMAP_LEGEND .. CMAP_NONE, cfg, cmapMode,
-        cmapActions, cmapTip, cut out of index.html) in node against this server's /config; `script`
-        prints one JSON value. Skipped where node is not installed."""
-        node = shutil.which("node")
-        if not node:
-            self.skipTest("node not installed: the CONTROLLER MAP logic is not run")
-        page = W.PAGE_PATH.read_text(encoding="utf-8")
-
-        def function(name):
-            start = page.index("function %s(" % name)
-            depth, i = 0, page.index("{", start)
-            while True:
-                depth += {"{": 1, "}": -1}.get(page[i], 0)
-                i += 1
-                if depth == 0:
-                    return page[start:i]
-
-        consts = page[page.index("const CMAP_LEGEND = "):page.index("\n", page.index("const CMAP_NONE = "))]
-        _, _, cfg = self.request("GET", "/config")
-        js = "\n".join(["const S = {live: true, serverUp: true, frozen: false, conf: %s};" % json.dumps(cfg), consts] +
-                       [function(n) for n in ("cfg", "cmapMode", "cmapActions", "cmapTip")] + [script])
-        r = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=30)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        return json.loads(r.stdout)
-
-    def test_controller_map_servo_adjust_labels(self):
-        """Owner, 2026-11-03: SERVO ADJUST on Menu. Normal mapping: Menu 'Servo adjust' (refused
-        outside DISARMED), View unused. In adjust mode (LCD row 0 starts with LCD_TXT_SERVO_ADJUST
-        while DISARMED): Menu 'Save & exit', View 'Reset to config.h', A / B record REST / FIRE,
-        X test stroke, the d-pad and bumpers nudge by the SERVO_ADJUST_STEP_* steps, Y not used."""
-        adjust = SET.cfg["LCD_TXT_SERVO_ADJUST"]
-        out = self.cmap_js("""
-          const t = (state, row0) => ({telemetry: {stateName: state, lcdRows: [row0, "R:1 F:2"], fireModeName: "SEMI",
-                                      ammo: 3, faultName: "NONE"}, telemetryState: "live"});
-          const adj = cmapMode(t("DISARMED", %s + " 23"));
-          const res = {adj, adjActs: cmapActions(adj), shown: cmapMode(t("ARMED", %s + " 23")).kind};
-          for (const st of ["DISARMED", "ARMED"]) res[st] = cmapActions(cmapMode(t(st, "DISARMED")));
-          res.saveTip = cmapTip("Menu", res.adjActs.start);
-          res.none = CMAP_NONE;
-          console.log(JSON.stringify(res));""" % (json.dumps(adjust), json.dumps(adjust)))
-        none, a = out["none"], out["adjActs"]
-        self.assertEqual(out["adj"]["kind"], "adjust")
-        self.assertTrue(out["adj"]["caption"].startswith(adjust))
-        self.assertEqual(out["shown"], "normal")                     # the text alone is not enough: DISARMED too
-        for bid, act in (("start", "Save & exit"), ("back", "Reset to config.h"), ("a", "Record REST"),
-                         ("b", "Record FIRE"), ("x", "Test stroke"), ("rstick", "Aim (pan / tilt)")):
-            with self.subTest(button=bid):
-                self.assertEqual(a[bid]["act"], act)
-                self.assertTrue(a[bid]["use"] and a[bid]["ok"])
-        small, large = SET.cfg["SERVO_ADJUST_STEP_SMALL_DEG"], SET.cfg["SERVO_ADJUST_STEP_LARGE_DEG"]
-        for bid, step in (("dpadUp", "+%d" % small), ("dpadDown", "−%d" % small), ("rb", "+%d" % large),
-                          ("lb", "−%d" % large)):
-            self.assertTrue(a[bid]["act"].startswith(step + "°"), (bid, a[bid]))
-        for bid in ("y", "dpadLeft", "dpadRight", "rt"):
-            self.assertFalse(a[bid]["use"], bid)                     # Y (and the rest) "not used"
-        self.assertEqual(a["y"]["act"], none)
-        self.assertIn("refused while the turret moves", out["saveTip"])
-        for st in ("DISARMED", "ARMED"):
-            with self.subTest(state=st):
-                n = out[st]
-                self.assertEqual(n["start"]["act"], "Servo adjust")
-                self.assertEqual(n["start"]["ok"], st == "DISARMED")
-                self.assertEqual(n["back"]["act"], none)
-                self.assertEqual(n["y"]["act"], none)
-                self.assertEqual(n["a"]["act"], "Arm / disarm")
-
-    def test_page_has_the_servo_adjust_mapping_text(self):
-        """Without node: the adjust mapping's labels are in the page and the old teach ones are gone."""
-        page = W.PAGE_PATH.read_text(encoding="utf-8")
-        for needle in ('put("start", "Save & exit"', 'put("back", "Reset to config.h"', 'put("start", "Servo adjust"',
-                       'kind: "adjust"', 'cfg("LCD_TXT_SERVO_ADJUST")', 'put("a", "Record REST")',
-                       'put("b", "Record FIRE")', 'put("x", "Test stroke")'):
-            self.assertIn(needle, page, needle)
-        for gone in ("Exit teach", "LCD_TXT_SERVO_TEACH", "SERVO_TEACH_", "m-teach"):
-            self.assertNotIn(gone, page, gone)
-
     def test_state_carries_what_the_map_reads(self):
-        """Adjust mode is read from telemetry LCD row 0 and the turret's state; the lights from the
+        """Teach mode is read from telemetry LCD row 0 and the turret's state; the lights from the
         controller view."""
-        adjust = SET.cfg["LCD_TXT_SERVO_ADJUST"]
-        lcd = adjust.ljust(P.DS_TELEMETRY_LCD_COLS - 2) + "23"
+        teach = SET.cfg["LCD_TXT_SERVO_TEACH"]
+        lcd = teach.ljust(P.DS_TELEMETRY_LCD_COLS - 2) + "23"
         self.hub.on_frame(P.Frame(P.PacketType.TELEMETRY, b"", P.TelemetryPacket(
             state=P.DS_STATE_DISARMED, linkSource=P.DS_LINK_SRC_BLE, padState=P.DS_PAD_STATE_CONNECTED,
             padButtons=P.DS_BTN_DPAD_UP | P.DS_BTN_RB, padRt=700, lcd=lcd.ljust(P.DS_TELEMETRY_LCD_COLS * P.DS_TELEMETRY_LCD_ROWS))))
         _, _, state = self.request("GET", "/state")
         t, c = state["telemetry"], state["controller"]
         self.assertEqual(t["stateName"], "DISARMED")
-        self.assertTrue(t["lcdRows"][0].startswith(adjust))
+        self.assertTrue(t["lcdRows"][0].startswith(teach))
         self.assertIn(t["fireModeName"], ("SEMI", "FULL"))
         self.assertTrue(c["live"] and c["reported"])
         self.assertTrue(c["buttonBits"]["dpadUp"] and c["buttonBits"]["rb"])

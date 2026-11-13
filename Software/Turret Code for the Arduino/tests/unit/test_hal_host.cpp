@@ -2,7 +2,7 @@
 // hal_arduino.cpp where the module tests will rely on it: virtual time, the stepper model
 // (exact periods, buffered speed changes, direction after the next step, bounds, lost steps
 // against the tilt stop and with the drivers off), the step-quiet window, the paced serial
-// pipes, the LCD cursor contract, LEDs, servo, PWM, injected inputs and the settings store.
+// pipes, the LCD cursor contract, LEDs, servo, PWM and injected inputs.
 //
 // SPDX-License-Identifier: MIT
 #include <string>
@@ -484,49 +484,6 @@ TEST(deterministic) {
   const std::string b = scriptedRun();
   CHECK_EQ(a, b);
   CHECK(a.find("tick\ntick\n") != std::string::npos);
-}
-
-// The settings store (SERVO ADJUST's data flash): blank after reset(), kept by reboot(), a save
-// blocks for storeSaveUs() of virtual time while the steppers keep stepping, sizes past
-// SETTINGS_STORE_MAX_BYTES are refused, a failing flash returns false and writes nothing.
-TEST(settings_store_is_blank_after_reset_kept_by_reboot_and_a_save_blocks) {
-  boot();
-  uint8_t buf[SETTINGS_STORE_MAX_BYTES];
-  CHECK(hal::storeLoad(buf, sizeof buf));
-  for (uint8_t b : buf) CHECK_EQ(b, (uint8_t)BYTE_MASK);
-  CHECK(!hal::storeLoad(buf, sizeof buf + 1));
-  CHECK(!hal::storeSave(buf, sizeof buf + 1));
-  CHECK(!hal::storeSave(buf, 0));
-  const uint8_t rec[] = {7, 8, 9};
-  hal::stepperEnable(true);
-  hal::stepSetRate(AXIS_PAN, 1000.0f);   // one step a ms
-  const uint64_t t0 = hal_host::timeUs();
-  const uint32_t steps0 = hal_host::totalSteps(AXIS_PAN);
-  CHECK(hal::storeSave(rec, sizeof rec));
-  CHECK_EQ(hal_host::timeUs() - t0, hal_host::kStoreSaveTypicalUs);   // it blocked ...
-  const uint32_t stepped = hal_host::totalSteps(AXIS_PAN) - steps0;    // ... and the steps went on
-  CHECK(stepped + 1 >= (uint32_t)(hal_host::kStoreSaveTypicalUs / US_PER_MS));
-  CHECK_EQ(hal_host::storeSaves(), 1u);
-  CHECK_EQ(hal_host::storeByte(1), (uint8_t)8);
-  CHECK_EQ(hal_host::storeByte(sizeof rec), (uint8_t)BYTE_MASK);        // the rest untouched
-  hal_host::reboot();
-  hal::begin();
-  CHECK_EQ(hal_host::timeUs(), 0u);
-  CHECK_EQ(hal_host::storeSaves(), 0u);
-  CHECK(hal::storeLoad(buf, sizeof rec));
-  CHECK(buf[0] == 7 && buf[1] == 8 && buf[2] == 9);
-  hal_host::storeSetByte(2, 0);           // corrupt one byte
-  CHECK(hal::storeLoad(buf, sizeof rec));
-  CHECK_EQ(buf[2], (uint8_t)0);
-  hal_host::setStoreSaveUs(0);
-  hal_host::failStoreSaves(true);
-  const uint8_t other[] = {1, 2, 3};
-  CHECK(!hal::storeSave(other, sizeof other));
-  CHECK_EQ(hal_host::storeByte(0), (uint8_t)7);
-  hal_host::failStoreSaves(false);
-  hal_host::reset();
-  CHECK_EQ(hal_host::storeByte(0), (uint8_t)BYTE_MASK);
-  CHECK_EQ(hal_host::storeSaveUs(), hal_host::kStoreSaveTypicalUs);
 }
 
 TESTKIT_MAIN()

@@ -40,7 +40,7 @@ class TestRealConfig(unittest.TestCase):
         self.assertEqual(cfg.LCD_I2C_ADDR, int(cfg.raw("LCD_I2C_ADDR"), 16))
         self.assertLess(cfg.PAN_MIN_DEG, 0)
         self.assertEqual(cfg.TILT_CAL_MODE, cfg.CAL_RAM)          # an alias of another define
-        self.assertEqual(cfg.rgb("LED_COLOR_EMPTY_MAG"), (0x80, 0x00, 0xFF))
+        self.assertEqual(cfg.rgb("LED_COLOR_ARMED_FULL"), (0xFF, 0x60, 0x00))
         for name in ("PIN_TOGGLE_POWER", "LINK_SERIAL", "LED_PIXEL_ORDER"):
             self.assertIsInstance(cfg[name], C.RawToken, name)
         self.assertEqual(cfg.PIN_TOGGLE_POWER, "A0")

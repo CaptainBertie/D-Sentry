@@ -1,22 +1,18 @@
 // Leds.h -- the 8 WS2812 LEDs (spec 3.8, docs/architecture.md 3, 5 and 6).
 //
-// What they show, highest priority first (all LED_COUNT LEDs show the same colour; the scheme
-// the owner set on 2026-11-03):
+// What they show, highest priority first (all LED_COUNT LEDs show the same colour):
 //   OFF state        dark, whatever else the model says (spec 3.1: power off = LEDs dark)
 //   FAULT state      LED_COLOR_FAULT hard blink: LED_FAULT_BLINK_MS on, LED_FAULT_BLINK_MS off,
 //                    starting ON when FAULT is entered
-//   servoTeach       LED_COLOR_SERVO_ADJUST solid (DISARMED in SERVO ADJUST; a test stroke too)
-//   emptyMagBlink    in DISARMED or ARMED only: a double flash of LED_COLOR_EMPTY_MAG over the
-//                    state colour, repeating every LED_EMPTY_FLASH_PERIOD_MS from the moment the
-//                    flag rose: LED_EMPTY_FLASH_ON_MS flash, LED_EMPTY_FLASH_GAP_MS state colour,
-//                    LED_EMPTY_FLASH_ON_MS flash, then the state colour for the rest of the period
-//                    (so ARMED's ready / wait colour stays readable while the magazine reads 0)
+//   firing           LED_COLOR_FIRING solid (TurretState keeps `firing` up for at least
+//                    LED_FIRE_FLASH_MIN_MS per stroke; a SERVO TEACH test stroke too)
+//   servoTeach       LED_COLOR_SERVO_TEACH solid (DISARMED in SERVO TEACH)
+//   emptyMagBlink    LED_COLOR_EMPTY_MAG blink at LED_FAULT_BLINK_MS (architecture.md 6),
+//                    starting ON at the moment the flag rises
 //   state colour     BOOT / CALIBRATING: LED_COLOR_STARTUP pulsing between
 //                    LED_PULSE_MIN_FRACTION and full; PAIRING: sinusoidal crossfade
 //                    LED_COLOR_PAIRING_A -> LED_COLOR_PAIRING_B -> A; DISARMED: LED_COLOR_DISARMED;
-//                    ARMED: LED_COLOR_ARMED_READY when DisplayModel::fireReady (a pull would fire
-//                    now), else LED_COLOR_ARMED_WAIT (a stroke and its LED_FIRE_FLASH_MIN_MS hold,
-//                    the flywheel spin-up, any closed Trigger gate). Semi / full is not shown.
+//                    ARMED: LED_COLOR_ARMED_SEMI or LED_COLOR_ARMED_FULL by fire mode
 // Pulses and the crossfade are sinusoidal with period LED_PULSE_PERIOD_MS, phase 0 when the
 // state was entered (DisplayModel::stateSinceMs): dim (or colour A) at 0, bright (or B) at
 // half a period.
@@ -54,7 +50,7 @@ class Leds {
 
   // Pure rendering (unit tests). The colour the model asks for at nowMs, at full scale
   // (0..LED_CHANNEL_MAX per channel, before scale()). emptyMagSinceMs: when emptyMagBlink
-  // last rose (the double flash's phase 0); update() tracks it.
+  // last rose (the blink's phase 0); update() tracks it.
   static Rgb colorFor(const DisplayModel& model, uint32_t nowMs, uint32_t emptyMagSinceMs);
   // Sinusoid over LED_PULSE_PERIOD_MS: 0 at elapsed 0 and at every whole period, 1 at half.
   static float pulseWave(uint32_t elapsedMs);
@@ -62,9 +58,6 @@ class Leds {
   static float pulseLevel(uint32_t elapsedMs);
   // A hard blink of LED_FAULT_BLINK_MS on / LED_FAULT_BLINK_MS off, on at elapsed 0.
   static bool blinkOn(uint32_t elapsedMs);
-  // The empty-magazine double flash, elapsed since the flag rose: true during the two
-  // LED_EMPTY_FLASH_ON_MS flashes of every LED_EMPTY_FLASH_PERIOD_MS (the first at elapsed 0).
-  static bool emptyFlashOn(uint32_t elapsedMs);
 
   // ---- telemetry / debug ----
   Rgb pixel0() const { return shown_; }         // LED 0 as last SHOWN, after scale()

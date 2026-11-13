@@ -68,7 +68,7 @@
 #define PAN_STEPS_PER_DEG   (MOTOR_FULL_STEPS_PER_REV * MICROSTEPS * PAN_GEAR_RATIO  / 360.0f)
 #define TILT_STEPS_PER_DEG  (MOTOR_FULL_STEPS_PER_REV * MICROSTEPS * TILT_GEAR_RATIO / 360.0f)
 
-#define PAN_DIR_INVERT      false  // [TUNE] flip if stick-right turns turret left
+#define PAN_DIR_INVERT      true   // [TUNE] flip if stick-right turns turret left (owner flipped 2026-11-04)
 #define TILT_DIR_INVERT     false  // [TUNE] flip if stick-up tilts barrel down
 
 // -----------------------------------------------------------------------------
@@ -76,9 +76,12 @@
 // -----------------------------------------------------------------------------
 #define JOY_DEADZONE          0.12f   // [TUNE] fraction of full stick travel ignored
 #define JOY_EXPO              0.40f   // [TUNE] 0 = linear, 1 = fully cubic feel
-#define PAN_MAX_DEG_PER_S    90.0f    // [TUNE] speed at full stick deflection
+#define PAN_MAX_DEG_PER_S   270.0f    // [TUNE] speed at full stick deflection (owner: motor max trial,
+                                      //        2026-11-04; = STEP_MAX_RATE_HZ / PAN_STEPS_PER_DEG;
+                                      //        was 90, then 135). Back off if pan skips steps.
 #define TILT_MAX_DEG_PER_S   60.0f    // [TUNE]
-#define PAN_ACCEL_DEG_PER_S2  400.0f  // [TUNE] limits jerk; also the decel rate
+#define PAN_ACCEL_DEG_PER_S2  800.0f  // [TUNE] limits jerk; also the decel rate (was 400; doubled
+                                      //        with the 270 deg/s pan so a stop takes ~45 deg)
 #define TILT_ACCEL_DEG_PER_S2 300.0f  // [TUNE]
 #define HOME_SPEED_DEG_PER_S  45.0f   // [TUNE] speed used for "go to home"
 #define CONTROL_LOOP_HZ        100    // [TUNE] how often joystick is re-read
@@ -115,58 +118,86 @@
 #define CAL_RAM             2
 #define TILT_CAL_MODE       CAL_RAM        // [CHOICE] switch to CAL_STALL_SENSE
                                            //          once A2 is wired
-#define TILT_CAL_SPEED_DEG_PER_S  10.0f    // [TUNE] slow, so a ram is gentle
-#define TILT_CAL_MAX_TRAVEL_DEG   90.0f    // [TUNE] CAL_RAM: distance commanded
+#define TILT_CAL_SPEED_DEG_PER_S  15.0f    // [TUNE] slow, so a ram is gentle (owner: calibration
+                                           //        in 5 s or less, 2026-11-04; was 10)
+#define TILT_CAL_MAX_TRAVEL_DEG   50.0f    // [TUNE] CAL_RAM: distance commanded (> TILT_RANGE_DEG +
+                                           //        TILT_CAL_BACKOFF_DEG; was 90)
                                            //        downward (> real range)
 #define TILT_CAL_TIMEOUT_MS      20000     // [TUNE] CAL_STALL_SENSE: give up and
                                            //        fault if no stall seen
 #define TILT_CAL_SETTLE_MS         300     // [TUNE] pause after hitting stop
+#define TILT_BOOT_RAISE_DEG       20.0f    // [TUNE] after calibration the barrel lifts to this
+                                           //        tilt (owner, 2026-11-04); 0 = stay at 0
 
 // -----------------------------------------------------------------------------
 // 5. FIRING  (trigger servo)
 // -----------------------------------------------------------------------------
 #define TRIGGER_SERVO_REVERSED   true    // [HW] owner, 2026-11-03: the trigger servo turns the
-                                         //      other way. Every angle below (and in SERVO ADJUST)
+                                         //      other way. Every angle below (and in SERVO TEACH)
                                          //      is mirrored, SERVO_SPAN_DEG - angle, just before it
                                          //      reaches the servo. Flipping this mirrors where the
-                                         //      servo goes: re-adjust REST/FIRE after changing it.
-#define TRIGGER_REST_ANGLE       180     // [TUNE] servo degrees, dart not pushed: the racked
-                                         //        position at the servo's end of travel (set by
-                                         //        the owner with SERVO ADJUST, 2026-11-03).
-                                         //        Angles saved by SERVO ADJUST replace this one
-                                         //        and FIRE below at boot (section 13)
-#define TRIGGER_FIRE_ANGLE        25     // [TUNE] servo degrees, dart fully pushed (owner,
-                                         //        2026-11-03; was 55 from SERVO TEACH, now ADJUST)
-#define TRIGGER_SWEEP_DEG_PER_S  300.0f  // [TUNE] servo degrees per second: while shooting, the
-                                         //        commanded angle glides from REST to FIRE and
-                                         //        back at this rate, so the pusher moves slower
-                                         //        than the servo's own top speed and really
-                                         //        follows the command. A hobby servo has no
-                                         //        position feedback, so this is what makes "the
-                                         //        stroke completed" (and the ammo count) true.
-                                         //        0 = jump straight to each angle, as before
-#define TRIGGER_FORWARD_MS       180     // [TUNE] hold at FIRE after the sweep arrives
-#define TRIGGER_RETURN_MS        180     // [TUNE] hold at REST after the sweep back arrives;
-                                         //        then the stroke is complete and ammo - 1.
-                                         //        Stroke = sweep out + FORWARD + sweep back +
-                                         //        RETURN: 417 + 180 + 417 + 180 = 1194 ms at
-                                         //        REST 180 / FIRE 55 / 300 deg/s
-#define TRIGGER_COOLDOWN_MS      500     // [TUNE] semi auto: after a stroke completes, no new
-                                         //        stroke starts for this long; a pull still held
-                                         //        when it ends fires then, one let go before it
-                                         //        ends never fires. Full auto has no gap
+                                         //      servo goes: re-teach every angle after changing it.
+#define TRIGGER_REST_ANGLE    125     // [TUNE] servo degrees, dart not pushed: the racked
+                                         //        position at the servo's end of travel (taught by
+                                         //        the owner with SERVO TEACH, 2026-11-03)
+#define TRIGGER_FIRE_ANGLE      9      // [TUNE] servo degrees, dart fully pushed (owner,
+                                         //        2026-11-04; was 25)
+#define TRIGGER_PREFIRE_ANGLE  65     // [TUNE] servo degrees, the waiting place while ammo > 0:
+                                         //        the pusher sits here, close to the dart, so a
+                                         //        shot only has the short PRE-FIRE -> FIRE move
+                                         //        (provisional, owner 2026-11-04)
+#define TRIGGER_CLEAR_ENABLED    false   // [CHOICE] true = after FIRE and REST the pusher
+                                         //          visits CLEAR and comes back to REST (held
+                                         //          TRIGGER_RETURN_MS again) before the shot counts;
+                                         //          false = the shot counts at the first REST hold
+                                         //          (owner, 2026-11-04)
+#define TRIGGER_CLEAR_ANGLE      150     // [TUNE] servo degrees, the clear position (used only
+                                         //        with TRIGGER_CLEAR_ENABLED; SERVO TEACH View
+                                         //        records it either way) (owner, 2026-11-04)
+#define TRIGGER_SWEEP_DEG_PER_S  600.0f  // [TUNE] servo degrees per second: every firing move
+                                         //        (PRE-FIRE -> FIRE -> REST [-> CLEAR -> REST] ->
+                                         //        PRE-FIRE) glides at this rate, re-commanded
+                                         //        every ms (owner, 2026-11-04; was 450). A hobby
+                                         //        servo has no position feedback: keep it below
+                                         //        the servo's own top speed so the pusher really
+                                         //        follows. 0 = no glide: each angle is commanded
+                                         //        at once (the servo's top speed) and the holds
+                                         //        below are its time to arrive
+#define TRIGGER_FORWARD_MS       180     // [TUNE] hold at FIRE once the move there ends (time
+                                         //        to arrive and push the dart)
+#define TRIGGER_RETURN_MS        180     // [TUNE] hold at REST once each move there ends (time
+                                         //        to arrive); at the end of the last one the shot
+                                         //        counts (ammo - 1)
+#define TRIGGER_CLEAR_HOLD_MS    100     // [TUNE] hold at CLEAR, between the two REST holds
+                                         //        (TRIGGER_CLEAR_ENABLED only)
+#define TRIGGER_CHAMBER_MS       150     // [TUNE] then, if ammo > 0, the move to PRE-FIRE and,
+                                         //        once it ends, this long to arrive before the
+                                         //        next shot may start
+                                         //        (also after X moves the servo to PRE-FIRE).
+                                         //        At ammo 0 the servo stays at REST.
+                                         //        One shot at 600 deg/s (65 / 10 / 125) = 92
+                                         //        (PRE-FIRE -> FIRE) + 180 + 192 (-> REST) + 180
+                                         //        + 100 (-> PRE-FIRE) + 150 = 894 ms (last dart:
+                                         //        at REST, 644 ms). Full auto while held skips
+                                         //        PRE-FIRE: one shot per 192 + 180 + 192 + 180 =
+                                         //        744 ms after the first
+#define TRIGGER_COOLDOWN_MS      500     // [TUNE] semi auto: after a shot's sequence ends (the next
+                                         //        shot would be available), no new stroke starts
+                                         //        for this long; a pull still held when it ends
+                                         //        fires then, one let go before it ends never
+                                         //        fires. Full auto has no gap
 #define TRIGGER_SERVO_MIN_US     544     // [HW]  Servo.attach pulse limits
 #define TRIGGER_SERVO_MAX_US    2400     // [HW]
 
 #define TRIGGER_PRESS_THRESHOLD   0.60f  // [TUNE] spec: >60% counts as pulled
 #define TRIGGER_RELEASE_THRESHOLD 0.40f  // [TUNE] must drop below this to re-arm
                                          //        a semi-auto shot (hysteresis)
-#define MAG_CAPACITY              15     // [TUNE] ammo count after X-button reset
-#define FIRE_LOCKOUT_WHEN_EMPTY   false  // [CHOICE] false = keep cycling at 0 ammo (the count
-                                         //          stays at 0), true = no stroke at 0. Owner,
-                                         //          2026-11-03: the count is only the darts the
-                                         //          turret thinks are left, so it never stops
-                                         //          firing; the LEDs flash purple at 0 instead
+#define MAG_CAPACITY              15     // [TUNE] ammo count after X-button reset; X also
+                                         //        moves the servo to PRE-FIRE
+#define TRIGGER_AMMO_AT_BOOT       0     // [CHOICE] ammo count at power-up and after every
+                                         //          power-toggle reboot (0: press X to load;
+                                         //          the servo waits at REST)
+#define FIRE_LOCKOUT_WHEN_EMPTY   true   // [CHOICE] false = keep cycling at 0 ammo
 #define FIRE_REQUIRES_FLYWHEEL    true   // [CHOICE] false = trigger works without LB
 #define FLYWHEEL_SPINUP_MS        600    // [TUNE] min time flywheels must be on
                                          //        before a shot is allowed
@@ -216,31 +247,20 @@
                                          //      protects the 5 V rail. Never raise.
 #define LED_PULSE_PERIOD_MS      1200    // [TUNE] full dim-bright-dim cycle
 #define LED_PULSE_MIN_FRACTION    0.05f  // [TUNE] floor of the pulse (0 = fully off)
-#define LED_FIRE_FLASH_MIN_MS     120    // [TUNE] ARMED yellow (next shot not ready) stays
-                                         //        on at least this long per shot, so even
-                                         //        a very short stroke is visible
+#define LED_FIRE_FLASH_MIN_MS     120    // [TUNE] red stays on at least this long
+                                         //        per shot so it is visible
 #define LED_REFRESH_HZ             50    // [TUNE]
 // Colours as 0xRRGGBB, applied under LED_MAX_BRIGHTNESS ----------------------
 #define LED_COLOR_DISARMED        0x00FF00  // green
-// ARMED: the owner changed the scheme on 2026-11-03. The LEDs say whether a pull fires right
-// now, no longer semi / full (the LCD still shows ARMED S / F); these two replace
-// LED_COLOR_ARMED_SEMI, LED_COLOR_ARMED_FULL and LED_COLOR_FIRING.
-#define LED_COLOR_ARMED_READY     0xFF0000  // red: a pull would fire right now
-#define LED_COLOR_ARMED_WAIT      0xFFFF00  // yellow: the next shot is not available yet
-                                            // (stroke running, flywheels spinning up, ...)
+#define LED_COLOR_ARMED_SEMI      0xFFFF00  // yellow
+#define LED_COLOR_ARMED_FULL      0xFF6000  // orange
+#define LED_COLOR_FIRING          0xFF0000  // red
 #define LED_COLOR_STARTUP         0xFFFFFF  // white, pulses to off
 #define LED_COLOR_PAIRING_A       0x0000FF  // blue  }  pulses between the two
 #define LED_COLOR_PAIRING_B       0xFFFFFF  // white }
 #define LED_COLOR_FAULT           0xFF0000  // red, hard blink (stall / cal fail)
 #define LED_FAULT_BLINK_MS        250       // [TUNE]
-// Empty magazine (owner, 2026-11-03): ammo 0 in DISARMED or ARMED shows a repeating double
-// flash over the colour the LEDs show anyway (green, or ARMED red / yellow) until X reloads:
-// flash, gap, flash, then that colour for the rest of LED_EMPTY_FLASH_PERIOD_MS.
-#define LED_COLOR_EMPTY_MAG       0x8000FF  // purple
-#define LED_EMPTY_FLASH_ON_MS     120       // [TUNE] length of each of the two flashes
-#define LED_EMPTY_FLASH_GAP_MS    120       // [TUNE] the colour underneath between the flashes
-#define LED_EMPTY_FLASH_PERIOD_MS 1000      // [TUNE] the pattern repeats this often; must be
-                                            //        longer than two flashes and the gap
+#define LED_COLOR_EMPTY_MAG       0xFF00FF  // magenta blink when lockout active
 #define LED_PIXEL_ORDER           NEO_GRB   // [HW] swap to NEO_RGB if colours wrong
 
 // -----------------------------------------------------------------------------
@@ -288,7 +308,7 @@
 #define RUMBLE_FULL_AUTO_CONTINUOUS true // [CHOICE] keep rumbling while cycling
 #define JOY_AXIS_RANGE             512   // [HW] Bluepad32 axis range is -512..511
 #define TRIGGER_AXIS_RANGE        1023   // [HW] Bluepad32 trigger range 0..1023
-#define JOY_INVERT_Y              true   // [HW] Bluepad32 reports stick-up as
+#define JOY_INVERT_Y              true   // [HW] Bluepad32 reports stick-up as (owner flipped back 2026-11-06)
                                          //      negative; true makes up = +tilt
 
 // Failsafe on controller loss --------------------------------------------------
@@ -304,7 +324,7 @@
 #define WIFI_PASSWORD             ""            // [HW]
 #define WIFI_MODE_AP_FALLBACK     true          // [CHOICE] host own AP if STA fails
 #define WIFI_AP_SSID              "D-SENTRY"
-#define WIFI_AP_PASSWORD          "brockpurdy"  // [HW] >= 8 chars (owner, 2026-11-03)
+#define WIFI_AP_PASSWORD          "CHANGE_ME_8CHARS"  // [HW] >= 8 chars - REDACTED for the public repo, set your own
 #define WIFI_UDP_PORT             4210          // [HW] PC relay sends here
 #define BLE_DEVICE_NAME           "D-SENTRY"
 #define BLE_FORGET_PAIRINGS_ON_BOOT false       // [CHOICE] true wipes bond keys
@@ -351,8 +371,8 @@
 #define DEBUG_TX_BUFFER_BYTES     1024   // [TUNE] paced USB TX ring; a message that
                                          //        does not fit is dropped whole
 #define DEBUG_LOG_LINE_MAX         128   // [TUNE] longest debug text line, chars
-                                         //        (longer lines are cut). At least 110:
-                                         //        the servo adjust summary (uptime + both
+                                         //        (longer lines are cut). At least 109:
+                                         //        the servo teach summary (uptime + both
                                          //        #define lines) must fit one line
 #define SHELL_LINE_MAX              48   // [TUNE] longest shell command; longer
                                          //        lines are dropped and counted
@@ -368,8 +388,8 @@
                                          //      0 = most urgent, 15 = least
 #define STEP_PULSE_US                3   // [HW] STEP high time; A4988 needs >= 1 us,
                                          //      DRV8825 >= 1.9 us
-#define STEP_MAX_RATE_HZ        3000.0f  // [TUNE] safety cap: no axis is ever stepped
-                                         //        faster (pan max is 2000 steps/s)
+#define STEP_MAX_RATE_HZ        6000.0f  // [TUNE] safety cap: no axis is ever stepped
+                                         //        faster (pan max 6000 steps/s, 2026-11-04; was 3000)
 #define STEP_MIN_RATE_HZ          25.0f  // [TUNE] slower requests stop the axis; this
                                          //        bounds how late a buffered speed
                                          //        change can land (1/25 s)
@@ -428,25 +448,29 @@
 // Stall detector ----------------------------------------------------------------
 #define STALL_LOG_HZ                20   // [TUNE] level-3 sample/baseline log lines/s
 
-// Servo adjust mode (TurretState; Menu from DISARMED enters it, Menu again saves and leaves) ---
-// The owner sets the trigger servo's REST and FIRE angles with the pad. A hobby servo reports no
-// position, so what is recorded is the angle being commanded. Owner, 2026-11-03 (overrides the
-// spec's "settings RAM only"): leaving with Menu saves the angles in the RA4M1's data flash, and
-// every boot then uses them in place of TRIGGER_REST_ANGLE / TRIGGER_FIRE_ANGLE (the boot log
-// says which). View in adjust mode puts config.h's two angles back in force (Menu saves them).
-// The turret still logs ready-to-paste "#define TRIGGER_REST_ANGLE n" / FIRE lines.
-#define SERVO_ADJUST_STEP_SMALL_DEG  1   // [TUNE] d-pad up / down nudge, whole servo degrees
-#define SERVO_ADJUST_STEP_LARGE_DEG  5   // [TUNE] RB / LB nudge, whole servo degrees
-#define SERVO_ADJUST_MIN_DEG         0   // [TUNE] adjust mode never commands below this (>= 0);
+// Servo teach mode (TurretState; Y from DISARMED toggles it) ---------------------
+// The owner sets the trigger servo's REST, FIRE, PRE-FIRE and CLEAR angles with the pad (A, B,
+// d-pad right, View) and the turret logs ready-to-paste "#define TRIGGER_REST_ANGLE n" /
+// "#define TRIGGER_FIRE_ANGLE n" / "#define TRIGGER_PREFIRE_ANGLE n" /
+// "#define TRIGGER_CLEAR_ANGLE n" lines. A hobby servo reports
+// no position, so what is recorded is the angle being commanded. Recorded angles are used by
+// every stroke until the power toggle opens (RAM only; nothing is stored). D-pad left toggles
+// the flywheels (teach mode only; cut when it ends).
+#define SERVO_TEACH_STEP_SMALL_DEG   1   // [TUNE] d-pad up / down nudge, whole servo degrees
+#define SERVO_TEACH_STEP_LARGE_DEG   5   // [TUNE] RB / LB nudge, whole servo degrees
+#define SERVO_TEACH_MIN_DEG          0   // [TUNE] teach mode never commands below this (>= 0);
                                          //        raise it if the pusher meets a hard stop
-#define SERVO_ADJUST_MAX_DEG SERVO_SPAN_DEG // [TUNE] ... nor above this (<= SERVO_SPAN_DEG)
-#define LCD_TXT_SERVO_ADJUST "SERVO ADJUST" // [CHOICE] row 0 left in adjust mode; the commanded
-                                            //          angle right-justified ("SERVO ADJUST 180")
-#define LCD_TXT_SERVO_REST        "R:"   // [CHOICE] row 1 in adjust mode, the angles in force:
-#define LCD_TXT_SERVO_FIRE        "F:"   // [CHOICE] "R:180 F:25"
-#define LED_COLOR_SERVO_ADJUST 0x00FFFF  // [CHOICE] cyan while in adjust mode (under
-                                         //          LED_MAX_BRIGHTNESS; it wins over the empty-
-                                         //          magazine flash, only FAULT wins over it)
+#define SERVO_TEACH_MAX_DEG SERVO_SPAN_DEG // [TUNE] ... nor above this (<= SERVO_SPAN_DEG)
+#define LCD_TXT_SERVO_TEACH  "SERVO TEACH" // [CHOICE] row 0 left in teach mode; the commanded
+                                           //          angle is right-justified ("SERVO TEACH  23")
+#define LCD_TXT_SERVO_REST         "R"   // [CHOICE] row 1 in teach mode, no spaces so all four
+                                         //          fit 16 columns: "R180F64P118C150"
+#define LCD_TXT_SERVO_FIRE         "F"   // [CHOICE]
+#define LCD_TXT_SERVO_PREFIRE      "P"   // [CHOICE]
+#define LCD_TXT_SERVO_CLEAR        "C"   // [CHOICE]
+#define LCD_TXT_SERVO_UNSET        "-"   // [CHOICE] row 1: an angle not recorded yet this power-on
+#define LED_COLOR_SERVO_TEACH 0x00FFFF   // [CHOICE] cyan while in teach mode (under
+                                         //          LED_MAX_BRIGHTNESS; FAULT and FIRING win)
 
 // ESP32-S3 radio firmware (mirrored by tools/sync_config.py) --------------------
 #define ESP_RESTART_DELAY_MS        50   // [TUNE] after replying espMode=3 the ESP32
@@ -574,15 +598,6 @@
 #define HD44780_CLEAR_US          2000   // clear's execution time (datasheet: 1.52 ms)
 #define HD44780_CMD_ENTRY_INC     0x06   // entry mode: cursor moves right, no shift
 #define HD44780_CMD_US             100   // other commands' execution time (datasheet: 37 us)
-
-// SERVO ADJUST's record in the RA4M1's 8 KB data flash (core EEPROM library, hal_arduino.cpp):
-// magic (2 bytes, low first), version, REST, FIRE (whole degrees), CRC-8 (ds_crc8) of the bytes
-// before it. Blank flash reads 0xFF; blank or any mismatch means config.h's angles at boot.
-#define SETTINGS_STORE_ADDR          0   // [HW] EEPROM.h index of the record's first byte (in the
-                                         //      first 1 KB erase block; nothing else uses the store)
-#define SETTINGS_STORE_MAX_BYTES    16   // [HW] most bytes one hal::storeSave takes (its buffer)
-#define SERVO_STORE_MAGIC       0xD5A7   // marks a record written by this firmware
-#define SERVO_STORE_VERSION          1   // the record layout above; any other value is not read
 
 // ESP32-S3 radio firmware (mirrored by tools/sync_config.py) ----------------------
 #define ESP_MODE_REQUEST_MAGIC 0xD5E27701u // marks the RTC_NOINIT mode request as written by

@@ -219,7 +219,7 @@
   .cmap-mode::before { content: ""; flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--stale); }
   .cmap-mode.m-ARMED::before { background: var(--armed); } .cmap-mode.m-DISARMED::before { background: var(--ok); }
   .cmap-mode.m-FAULT::before { background: var(--bad); } .cmap-mode.m-PAIRING::before { background: var(--accent); }
-  .cmap-mode.m-adjust::before { background: var(--info); }
+  .cmap-mode.m-teach::before { background: var(--info); }
   .cmap-src { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
   .cmap-wrap { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; min-height: 0; }
   .cmap-svg { display: block; width: 100%; height: auto; max-height: 470px; }
@@ -668,7 +668,7 @@ function renderTelemetry(f) {
     v("stFly", `${fb.flywheelOn ? (fb.flywheelReady ? "on, spun up" : "on, spinning up") : "off"}  duty ${t.flywheelDuty}/${c.PWM_MAX}`);
     $("stFlyBar").style.width = (100 * t.flywheelDuty / c.PWM_MAX) + "%";
     v("stTrig", `${fb.triggerPulled ? "pulled" : "released"}${fb.strokeActive ? ", stroke running" : ""}${fb.emptyMagBlink ? ", EMPTY: locked out" : ""}`);
-    v("stServo", `${t.servoDeg} deg (${t.servoDeg === c.TRIGGER_FIRE_ANGLE ? "fire" : t.servoDeg === c.TRIGGER_REST_ANGLE ? "rest" : "moving"})`);
+    v("stServo", `${t.servoDeg} deg (${t.servoDeg === c.TRIGGER_FIRE_ANGLE ? "fire" : t.servoDeg === c.TRIGGER_REST_ANGLE ? "rest" : t.servoDeg === c.TRIGGER_PREFIRE_ANGLE ? "pre-fire" : t.servoDeg === c.TRIGGER_CLEAR_ANGLE ? "clear" : "moving"})`);
     v("stShots", String(t.shotsTotal));
     v("stHoming", fb.homing ? "going home" : "no");
     // LCD
@@ -832,7 +832,7 @@ function renderController(f) {
 // ---- CONTROLLER MAP panel -----------------------------------------------------------------
 // An Xbox Wireless Controller from the front, each control labelled with what it does on this
 // turret (spec 3.2 as built: TurretState.cpp controls / normalButtons / anyStateButtons /
-// decideFlywheel, and teachButtons in servo adjust mode), lit from f.controller, the same data as
+// decideFlywheel, and teachButtons in servo teach mode), lit from f.controller, the same data as
 // the CONTROLLER panel. The geometry is presentation only, in SVG user units (origin: the top
 // centre of the body, y down); every turret number in a label comes from /config.
 const CMAP_WIDE_MIN_PX = 600;                 // narrower: the drawing alone, the labels as a list below it
@@ -1032,8 +1032,8 @@ function cmapLayout() {               // wide: labels around the drawing; narrow
   $("cmapPanel").classList.toggle("cmap-narrow", !wide);
 }
 
-// Which mapping the turret is in, from live telemetry only: servo adjust mode when the LCD's row 0
-// starts with LCD_TXT_SERVO_ADJUST (the state stays DISARMED there), else the turret's state.
+// Which mapping the turret is in, from live telemetry only: servo teach mode when the LCD's row 0
+// starts with LCD_TXT_SERVO_TEACH (the state stays DISARMED there), else the turret's state.
 function cmapMode(f) {
   const t = f.telemetry;
   if (!S.live || !t) {
@@ -1041,10 +1041,10 @@ function cmapMode(f) {
       f.telemetryState === "badVersion" ? "Telemetry version mismatch" : "No telemetry yet";
     return {kind: "plain", caption: `${why}: the normal mapping, nothing greyed`, cls: ""};
   }
-  const adjust = String(cfg("LCD_TXT_SERVO_ADJUST") || ""), row0 = (t.lcdRows && t.lcdRows[0]) || "";
-  if (adjust && t.stateName === "DISARMED" && row0.startsWith(adjust)) {
-    const at = row0.slice(adjust.length).trim();
-    return {kind: "adjust", caption: adjust + (at ? ` \u00b7 servo commanded to ${at}${CMAP_DEG}` : ""), cls: "m-adjust"};
+  const teach = String(cfg("LCD_TXT_SERVO_TEACH") || ""), row0 = (t.lcdRows && t.lcdRows[0]) || "";
+  if (teach && t.stateName === "DISARMED" && row0.startsWith(teach)) {
+    const at = row0.slice(teach.length).trim();
+    return {kind: "teach", caption: teach + (at ? ` \u00b7 servo commanded to ${at}${CMAP_DEG}` : ""), cls: "m-teach"};
   }
   const st = t.stateName, drive = st === "DISARMED" || st === "ARMED";
   return {kind: "normal", state: st, fireMode: t.fireModeName, ammo: t.ammo, cls: "m-" + st,
@@ -1058,16 +1058,16 @@ function cmapActions(mode) {
   const c = S.conf.config, A = {};
   const put = (id, act, det, ok, why) => { A[id] = {act, det: det || "", use: act !== CMAP_NONE, ok: ok !== false, why: why || ""}; };
   for (const [id] of CMAP_LEGEND) put(id, CMAP_NONE);
-  if (mode.kind === "adjust") {       // TurretState::teachButtons; the stick still aims; no strokes but X's test
+  if (mode.kind === "teach") {        // TurretState::teachButtons; the stick still aims; no strokes but X's test
     const up = c.TRIGGER_FIRE_ANGLE > c.TRIGGER_REST_ANGLE, down = c.TRIGGER_FIRE_ANGLE < c.TRIGGER_REST_ANGLE;
     const step = (sign, deg) => (sign > 0 ? "+" : CMAP_MINUS) + deg + CMAP_DEG + ((sign > 0 ? up : down) ? " toward FIRE" : "");
-    put("dpadUp", step(1, c.SERVO_ADJUST_STEP_SMALL_DEG)); put("dpadDown", step(-1, c.SERVO_ADJUST_STEP_SMALL_DEG));
-    put("rb", step(1, c.SERVO_ADJUST_STEP_LARGE_DEG)); put("lb", step(-1, c.SERVO_ADJUST_STEP_LARGE_DEG));
-    put("a", "Record REST"); put("b", "Record FIRE"); put("x", "Test stroke");
-    put("start", "Save & exit", "flash, if changed");   // refused while the turret moves (the save blocks)
-    put("back", "Reset to config.h", "Menu saves it");  // config.h's TRIGGER_REST_ANGLE / _FIRE_ANGLE
-    put("rstick", "Aim (pan / tilt)");                  // Y: not used here either (the default)
-    A.rt = {act: CMAP_NONE + " (disabled in servo adjust)", det: "", use: false, ok: true, why: ""};
+    put("dpadUp", step(1, c.SERVO_TEACH_STEP_SMALL_DEG)); put("dpadDown", step(-1, c.SERVO_TEACH_STEP_SMALL_DEG));
+    put("rb", step(1, c.SERVO_TEACH_STEP_LARGE_DEG)); put("lb", step(-1, c.SERVO_TEACH_STEP_LARGE_DEG));
+    put("a", "Record REST"); put("b", "Record FIRE"); put("dpadRight", "Record PRE-FIRE");
+    put("back", "Record CLEAR");
+    put("x", "Test shot"); put("y", "Exit teach"); put("dpadLeft", "Flywheels on / off");
+    put("rstick", "Aim (pan / tilt)");
+    A.rt = {act: CMAP_NONE + " (disabled in teach)", det: "", use: false, ok: true, why: ""};
     return A;
   }
   const st = mode.kind === "normal" ? mode.state : null;      // null: no live telemetry, nothing refused
@@ -1085,9 +1085,10 @@ function cmapActions(mode) {
   put("a", "Arm / disarm", "", ...gate(drive, here));
   put("b", "Semi / full auto", "", ...gate(always, here));
   put("x", "Reload magazine", "", ...gate(always, here));
-  put("start", "Servo adjust", "", ...gate(st === "DISARMED", "only from DISARMED"));
+  put("y", "Servo teach (disarmed)", "", ...gate(st === "DISARMED", "only from DISARMED"));
   put("dpadLeft", "Set home", "", ...gate(drive, here));
   put("dpadDown", "Go home", "", ...gate(drive, here));
+  put("dpadUp", "Flywheels on/off", "armed: latch", ...gate(st === "ARMED", "only while ARMED"));
   return A;
 }
 
@@ -1101,9 +1102,6 @@ function cmapTip(name, a) {
     (c.FLYWHEEL_REQUIRES_ARMED ? ", only while ARMED (FLYWHEEL_REQUIRES_ARMED)" : "");
   if (a.act === "Arm / disarm" && c.ARM_REQUIRES_TRIGGER_RELEASED) tip += "; arming is refused while RT is pulled (ARM_REQUIRES_TRIGGER_RELEASED)";
   if (a.act === "Reload magazine") tip += ` (to MAG_CAPACITY, ${c.MAG_CAPACITY})`;
-  if (a.act === "Save & exit") tip += "; writes REST / FIRE to the turret's flash only if they changed (the turret " +
-    "boots on them from then on); refused while the turret moves, because the save pauses it for about 50 ms";
-  if (a.act === "Reset to config.h") tip += ` (REST ${c.TRIGGER_REST_ANGLE}, FIRE ${c.TRIGGER_FIRE_ANGLE}), the servo to that REST`;
   return tip + (a.ok ? "" : " \u2014 refused now: " + a.why);
 }
 

@@ -213,64 +213,66 @@ pack drains), or keep 113 for "9 V on average". Spec acceptance 8 also wants the
 
 If the wheels spin backwards, flip `FLYWHEEL_FORWARD_IN1_HIGH`.
 
-### 10. Trigger servo stroke (`TRIGGER_REST_ANGLE`, `TRIGGER_FIRE_ANGLE`, `TRIGGER_SWEEP_DEG_PER_S`, `TRIGGER_FORWARD_MS`, `TRIGGER_RETURN_MS`, `TRIGGER_COOLDOWN_MS`)
+### 10. Trigger servo stroke (`TRIGGER_REST_ANGLE`, `TRIGGER_FIRE_ANGLE`, `TRIGGER_PREFIRE_ANGLE`, `TRIGGER_CLEAR_ANGLE`, `TRIGGER_SWEEP_DEG_PER_S`, `TRIGGER_FORWARD_MS`, `TRIGGER_RETURN_MS`, `TRIGGER_CLEAR_HOLD_MS`, `TRIGGER_CHAMBER_MS`, `TRIGGER_COOLDOWN_MS`, `TRIGGER_AMMO_AT_BOOT`)
 
 **No darts in the magazine.** The flywheels spin during this test because a shot needs them
 ready; if you would rather they did not, unplug their leads from the L298N with the LiPo off.
 
-`!arm`, `!fly on`, wait a second, `!fire`: one stroke. Watch the pusher (a 240 fps phone video
-helps). At REST (180°) it must sit clear of the dart path so the next dart can drop in. At FIRE
-(55°) it must push a dart fully into the wheels without the servo stalling against the end
-(buzzing or getting warm). The quickest way to set both is SERVO ADJUST (Menu from DISARMED,
-below). The dashboard *State* "Servo" shows the commanded angle.
+The pusher has four positions. REST (180°) is the reload position, clear of the dart path so
+the next dart can drop in. FIRE (64°) pushes a dart fully into the wheels; the servo must not
+stall against the end (buzzing or getting warm). PRE-FIRE (118°, provisional) is where the
+pusher waits while there are darts, close behind the next one, so a shot starts with a short
+move. CLEAR (150°) is an optional stop just off REST (`TRIGGER_CLEAR_ENABLED`, off by default). The servo waits at PRE-FIRE while ammo > 0 and at REST at ammo 0. The
+quickest way to set all four is SERVO TEACH (Y from DISARMED): A records REST, B records FIRE,
+d-pad right records PRE-FIRE, View records CLEAR, X runs a test shot, d-pad left turns the
+flywheels on and off. The LCD's second row shows all four with no spaces, `R180F64P118C150`
+(`-` for an angle not recorded yet). The dashboard *State* "Servo" shows the commanded angle.
 
-A stroke has four parts. The commanded angle glides from REST to FIRE at
-`TRIGGER_SWEEP_DEG_PER_S` (300°/s), stays at FIRE for `TRIGGER_FORWARD_MS` (180 ms), glides back
-at the same rate, and stays at REST for `TRIGGER_RETURN_MS` (180 ms). Only then is the stroke
-complete and the ammo count goes down by one. A hobby servo reports no position, so the glide is
-what keeps the pusher on the commanded angle: keep `TRIGGER_SWEEP_DEG_PER_S` below the servo's own
-top speed (a servo rated 0.12 s per 60° turns 500°/s with no load). With REST 180 and FIRE 55 the
-glide covers 125°, so each sweep takes 417 ms and a stroke takes 417 + 180 + 417 + 180 = 1194 ms.
-If the pusher lags behind the glide (it reaches FIRE late, or turns back short of it), lower the
-rate. `TRIGGER_SWEEP_DEG_PER_S 0` turns the glide off: the servo jumps to each angle and the two
-holds alone must cover its travel.
+At power-up, and after every power-toggle reboot, ammo is `TRIGGER_AMMO_AT_BOOT` (0) and the
+servo waits at REST. Press X (or `!mag`): ammo becomes `MAG_CAPACITY` and the servo moves to
+PRE-FIRE; the first shot may start `TRIGGER_CHAMBER_MS` (150 ms) later.
 
-In semi auto the turret then waits `TRIGGER_COOLDOWN_MS` (500 ms) before the next stroke may
-start: 1194 + 500 = 1694 ms per shot, about 0.6 shots per second. A pull held through the wait
-fires the moment it ends; a tap inside it is ignored, and `!fire` answers `refused: semi-auto
-cooldown after the last shot`. Full auto has no wait: one stroke every 1194 ms, about 0.84 shots
-per second.
+`!arm`, `!mag`, `!fly on`, wait a second, `!fire`: one shot. Watch the pusher (a 240 fps phone
+video helps). Every move glides at `TRIGGER_SWEEP_DEG_PER_S` (600°/s): the commanded angle is
+updated every millisecond. One shot, in milliseconds from the pull, at PRE-FIRE 65 / FIRE 10 /
+REST 125 (owner, bench), with `TRIGGER_CLEAR_ENABLED` false (the shipped setting):
 
-You can also set REST and FIRE with the pad instead of editing numbers: while DISARMED, press
-**Menu** (the three-line button) to enter SERVO ADJUST. The LCD shows `SERVO ADJUST <angle>` over
-`R:<rest> F:<fire>` (the angles in force), the LEDs go cyan, and the servo goes to REST.
+| Step | Takes | Ends at |
+|---|---|---|
+| glide PRE-FIRE → FIRE (55°) | 92 | 92 |
+| hold at FIRE, `TRIGGER_FORWARD_MS` | 180 | 272 |
+| glide FIRE → REST (115°) | 192 | 464 |
+| hold at REST, `TRIGGER_RETURN_MS`; then ammo − 1 | 180 | 644 |
+| glide REST → PRE-FIRE (60°), only if ammo > 0 | 100 | 744 |
+| hold at PRE-FIRE, `TRIGGER_CHAMBER_MS`; the next shot is available | 150 | 894 |
 
-| Control | In SERVO ADJUST |
-|---|---|
-| D-pad up / down | servo +1° / −1° (`SERVO_ADJUST_STEP_SMALL_DEG`) |
-| RB / LB | servo +5° / −5° (`SERVO_ADJUST_STEP_LARGE_DEG`) |
-| A | record the angle as REST |
-| B | record the angle as FIRE |
-| X | one test stroke between REST and FIRE (no dart counted) |
-| View (two squares) | put `config.h`'s REST and FIRE back in force, servo to that REST |
-| Menu | save and leave |
-| Right stick | still aims |
-| Y, RT, d-pad left / right | nothing |
+`TRIGGER_CLEAR_ENABLED` true inserts the CLEAR visit after the first REST hold: glide REST →
+CLEAR (25° at CLEAR 150, 42 ms), hold `TRIGGER_CLEAR_HOLD_MS` (100), glide back to REST (42),
+hold `TRIGGER_RETURN_MS` again (180), and only then ammo − 1: the shot counts at 1008 ms and the
+next one is available at 1258 ms. SERVO TEACH's View records CLEAR whichever way it is set.
 
-**Menu saves the angles in the RA4M1's data flash** (owner, 2026-11-03), so they survive the power
-toggle, a reset and a power cut: every boot uses them in place of `TRIGGER_REST_ANGLE` /
-`TRIGGER_FIRE_ANGLE`, and the boot log says which it uses (`servo adjust: loaded saved REST 175 FIRE
-30 (config.h has REST 180 FIRE 25, not used)` or `servo adjust: no saved angles, using config.h
-...`). When nothing changed, Menu writes nothing (`... unchanged, nothing written`). Menu is refused
-while the turret moves (let go of the stick first): the save pauses the turret for about 50 ms.
-Leaving any other way (link lost, the mode or power toggle, a fault, `!cal`) does not save; the
-angles then last until the power toggle opens. Every exit prints the two `#define` lines to paste
-into `config.h`. After changing `config.h`'s angles on a turret that has saved ones, enter SERVO
-ADJUST, press View, then Menu: that saves `config.h`'s angles over the old ones.
-From the bench console: `!servo adjust` (or `!servo teach`) enters or saves and leaves,
-`!servo <deg>`, `!servo rest`, `!servo fire`, `!servo reset` (View), `!servo stroke`, `!servo off`
-(save and leave). Whether an upload of a new sketch keeps the data flash was not checked on this
-board; the boot log line answers it after the first upload.
+The last dart stops at REST when it counts (644 ms, or 1008 with CLEAR). A hobby servo reports
+no position, so the glide is what keeps the pusher on the commanded angle: keep
+`TRIGGER_SWEEP_DEG_PER_S` below the servo's own top speed (a servo rated 0.12 s per 60° turns
+500°/s with no load, so check 600 on video). If the pusher lags behind the glide (it reaches FIRE
+late, or turns back short of it), lower the rate. `TRIGGER_SWEEP_DEG_PER_S 0` turns the glide
+off: the servo jumps to each angle at its own top speed, and the holds alone must cover its
+travel (one shot is then 180 + 180 + 150 = 510 ms, 790 with CLEAR). An abort (disarm, link
+loss, power off, a fault, leaving teach mode) sends the servo straight home, PRE-FIRE or REST,
+and never changes the ammo count.
+
+In semi auto the turret then waits `TRIGGER_COOLDOWN_MS` (500 ms), counted from the moment the
+next shot is available: 894 + 500 = 1394 ms per shot, about 0.7 shots per second. A pull held
+through the wait fires the moment it ends; a tap inside it is ignored, and `!fire` answers
+`refused: semi-auto cooldown after the last shot`.
+
+Full auto has no wait and, while the trigger stays held, no PRE-FIRE visit (owner, 2026-11-04).
+The first shot starts from PRE-FIRE and counts at 644 ms as above. The next one starts the same
+millisecond, straight from REST: glide REST → FIRE (192), hold 180, glide back to REST (192),
+hold 180, ammo − 1. One shot every 744 ms after the first, about 1.3 shots per second (1108 ms
+with CLEAR). Let go and the stroke in progress finishes to REST, counts, then glides to
+PRE-FIRE and holds `TRIGGER_CHAMBER_MS` (+250 ms) before it waits there. At ammo 0 it stops at
+REST.
 
 ### 11. Trigger thresholds (`TRIGGER_PRESS_THRESHOLD`, `TRIGGER_RELEASE_THRESHOLD`)
 
@@ -311,14 +313,6 @@ The LED colours, pulse and blink times, LCD texts and rumble strength are taste.
 rule: `LED_MAX_BRIGHTNESS` never above 127 (the sketch refuses to compile above it). If DISARMED
 shows red instead of green, the LED module wants the other byte order: set
 `LED_PIXEL_ORDER NEO_RGB`.
-
-What the LEDs say (the owner's scheme of 2026-11-03), highest priority first: FAULT blinks red;
-SERVO ADJUST is cyan; at ammo 0 (DISARMED or ARMED) two short purple flashes repeat every second
-over the normal colour until X reloads; otherwise DISARMED is green, and ARMED is **red when a
-pull would fire right now** and **yellow while the next shot is not available** (a stroke
-running, at least `LED_FIRE_FLASH_MIN_MS` per shot, or the flywheels still spinning up). Semi /
-full is on the LCD (`ARMED S` / `ARMED F`), not the LEDs. In full auto with the trigger held
-the LEDs stay yellow from stroke to stroke.
 
 ### 14. Link timing (rarely)
 
@@ -436,17 +430,23 @@ protocol, and changing it alone breaks something.
 
 | Setting | Does | Safe range | See it | If wrong |
 |---|---|---|---|---|
-| `TRIGGER_REST_ANGLE` (180) [TUNE] | pusher back, dart not pushed | 0-180, clear of the dart path | *State* "Servo"; look | darts jam or cannot drop in |
-| `TRIGGER_FIRE_ANGLE` (55) [TUNE] | pusher forward, dart pushed | 0-180, short of the servo's end | look; servo must not buzz | dart not fed / servo stalls hot |
-| `TRIGGER_SWEEP_DEG_PER_S` (300) [TUNE] | rate the commanded angle glides REST → FIRE and back while shooting (Part 1 step 10); 0 = jump | 100 to below the servo's no-load speed (often 500) | slow-motion video: the pusher follows the glide | high: pusher lags, the stroke counts before it is back; low: slow shots |
-| `TRIGGER_FORWARD_MS` (180) [TUNE] | hold at FIRE after the sweep arrives | 50-500 | slow-motion video | low: pusher turns back before the dart is fed |
-| `TRIGGER_RETURN_MS` (180) [TUNE] | hold at REST after the sweep back arrives; then ammo − 1 | 50-500 | as above | low: next dart blocked |
-| `TRIGGER_COOLDOWN_MS` (500) [TUNE] | semi auto: least time from one completed stroke to the next start | 0-2000 | `!fire` right after a shot: `refused: semi-auto cooldown after the last shot` | low: shots too close together; high: slow follow-up shots |
+| `TRIGGER_REST_ANGLE` (180) [TUNE] | pusher back, dart not pushed: the reload position, where the servo waits at ammo 0 | 0-180, clear of the dart path | *State* "Servo"; look | darts jam or cannot drop in |
+| `TRIGGER_FIRE_ANGLE` (64) [TUNE] | pusher forward, dart pushed | 0-180, short of the servo's end | look; servo must not buzz | dart not fed / servo stalls hot |
+| `TRIGGER_PREFIRE_ANGLE` (118) [TUNE] | where the pusher waits while ammo > 0 (provisional, owner 2026-11-04); X moves it here | between REST and FIRE, behind the next dart | SERVO TEACH d-pad right; *State* "Servo" | too near FIRE: pushes the dart early; too near REST: slow shots |
+| `TRIGGER_CLEAR_ENABLED` (false) [CHOICE] | true: after the first REST hold visit CLEAR and hold REST again before ammo − 1 | either | slow-motion video | taste: +380 ms per shot |
+| `TRIGGER_CLEAR_ANGLE` (150) [TUNE] | the stop just off REST visited between the two REST holds (owner 2026-11-04) | near REST, out of the dart path | SERVO TEACH View; *State* "Servo" | taste: it replaces the old pause at REST |
+| `TRIGGER_SWEEP_DEG_PER_S` (600) [TUNE] | rate every firing move glides at (Part 1 step 10); 0 = jump at the servo's own speed | 100 to below the servo's no-load speed (often 500), or 0 | slow-motion video: the pusher follows the glide | high: pusher lags, the shot counts before it is back; low: slow shots |
+| `TRIGGER_FORWARD_MS` (180) [TUNE] | hold at FIRE after the move there | 50-500 | slow-motion video | low: pusher turns back before the dart is fed |
+| `TRIGGER_RETURN_MS` (180) [TUNE] | hold at REST after each move there (after FIRE, and after CLEAR, where ammo − 1 follows) | 50-500 | as above | low: the next move or the count starts before the pusher is back |
+| `TRIGGER_CLEAR_HOLD_MS` (100) [TUNE] | hold at CLEAR | 0-500 | as above | low: next dart may not have dropped in |
+| `TRIGGER_CHAMBER_MS` (150) [TUNE] | hold at PRE-FIRE after the move there (and after X) before the next shot may start | 50-500 | as above | low: the next shot starts before the pusher arrives |
+| `TRIGGER_COOLDOWN_MS` (500) [TUNE] | semi auto: least time from the next shot being available to its start | 0-2000 | `!fire` right after a shot: `refused: semi-auto cooldown after the last shot` | low: shots too close together; high: slow follow-up shots |
 | `TRIGGER_SERVO_MIN_US` (544), `TRIGGER_SERVO_MAX_US` (2400) [HW] | servo pulse at 0° and 180° (Servo.h defaults) | the servo's datasheet range, often 500-2500 | angles match | too wide: buzzing at the ends |
 | `TRIGGER_PRESS_THRESHOLD` (0.60) [TUNE] | pulled above this fraction | 0.3-0.9 | *Input being sent* trigger bar | low: fires on a light touch |
 | `TRIGGER_RELEASE_THRESHOLD` (0.40) [TUNE] | released below this | below PRESS by ≥ 0.1 | as above | too close to PRESS: double shots in semi |
 | `MAG_CAPACITY` (15) [TUNE] | ammo after X | 1-255 | *State* "Ammo", LCD | count disagrees with the magazine |
-| `FIRE_LOCKOUT_WHEN_EMPTY` (false) [CHOICE] | true: no strokes at ammo 0 | false (owner, 2026-11-03: the count is only an estimate) | the purple double flash at 0 either way | true: the turret stops firing whenever the count runs out early |
+| `TRIGGER_AMMO_AT_BOOT` (0) [CHOICE] | ammo at power-up and after every power-toggle reboot | 0-`MAG_CAPACITY` | LCD `AMMO:0` after boot | above 0: the count claims darts that may not be loaded |
+| `FIRE_LOCKOUT_WHEN_EMPTY` (true) [CHOICE] | no strokes at ammo 0 | either | magenta blink while pulled at 0 | false: dry strokes |
 | `FIRE_REQUIRES_FLYWHEEL` (true) [CHOICE] | no shot until the wheels have spun up | true for real darts | `!fire` refused: not ready | false: darts pushed into still wheels jam |
 | `FLYWHEEL_SPINUP_MS` (600) [TUNE] | wheels on this long before a shot | ≥ `FLYWHEEL_RAMP_MS` + time to full speed | first shot's range | low: weak first dart |
 | `ARM_REQUIRES_TRIGGER_RELEASED` (true) [CHOICE] | refuse to arm with RT held | true | `arm: refused: trigger held` | false: still never fires that pull |
@@ -457,7 +457,7 @@ protocol, and changing it alone breaks something.
 |---|---|---|---|---|
 | `FLYWHEEL_DUTY_255` (113) [TUNE] | motor voltage (Part 1 step 9) | 0-255; 98-120 for about 9 V | meter on the motor; *State* "Flywheel" | high: over-volted motors; low: weak darts |
 | `FLYWHEEL_RAMP_MS` (400) [TUNE] | soft start 0 to full duty | 200-1000 | listen; LiPo voltage dip | low: 3-4 A inrush |
-| `FLYWHEEL_HOLD_MODE` (true) [CHOICE] | true: spin while LB held; false: LB toggles | either | *State* "Flywheel" | taste |
+| `FLYWHEEL_HOLD_MODE` (true) [CHOICE] | true: spin while LB held; false: LB toggles. In ARMED, d-pad up always toggles them on/off as well (a latch: releasing LB does not cut it) | either | *State* "Flywheel" | taste |
 | `FLYWHEEL_REQUIRES_ARMED` (true) [CHOICE] | LB ignored while disarmed | true | LB in DISARMED | false: wheels spin disarmed |
 | `FLYWHEEL_BRAKE_ON_STOP` (false) [CHOICE] | coast, or brake for `FLYWHEEL_BRAKE_MS` | false unless you accept the spike (Part 2) | stop time | true: current spike |
 | `FLYWHEEL_BRAKE_MS` (1000) [TUNE] | brake time, then coast | 200-2000 | stop time | long: longer spike |
@@ -484,11 +484,9 @@ protocol, and changing it alone breaks something.
 | `LED_MAX_BRIGHTNESS` (127) [HW] | ceiling for every channel byte | 0-127, **never raise** (spec; protects the 5 V rail; compile refuses above 127) | *LCD and LEDs* ring mirror | - |
 | `LED_PULSE_PERIOD_MS` (1200) [TUNE] | one dim-bright-dim cycle | 500-3000 | BOOT and PAIRING pulse | taste |
 | `LED_PULSE_MIN_FRACTION` (0.05) [TUNE] | floor of the pulse | 0-1 | as above | taste |
-| `LED_FIRE_FLASH_MIN_MS` (120) [TUNE] | ARMED yellow at least this long per shot | 50-300 | yellow between red | low: a short stroke invisible |
+| `LED_FIRE_FLASH_MIN_MS` (120) [TUNE] | red at least this long per shot | 50-300 | red flash | low: flash invisible |
 | `LED_REFRESH_HZ` (50) [TUNE] | LED frames per second | 20-100 | smooth pulse | high: more forced shows (`led=`) |
-| `LED_FAULT_BLINK_MS` (250) [TUNE] | fault blink half-period | 100-500 | blink | taste |
-| `LED_EMPTY_FLASH_ON_MS` (120), `LED_EMPTY_FLASH_GAP_MS` (120) [TUNE] | each purple flash at ammo 0, and the normal colour between the two | 50-300 | ammo 0 | taste |
-| `LED_EMPTY_FLASH_PERIOD_MS` (1000) [TUNE] | the double flash repeats this often | more than 2 × ON + GAP (the build refuses otherwise) | ammo 0 | low: red / yellow underneath hard to read |
+| `LED_FAULT_BLINK_MS` (250) [TUNE] | fault and empty-magazine blink half-period | 100-500 | blink | taste |
 | `LED_PIXEL_ORDER` (`NEO_GRB`) [HW] | byte order of the module | `NEO_GRB` or `NEO_RGB` | DISARMED must be green | red and green swapped |
 | `LED_SHOW_GUARD_US` (300) [TUNE] | an LED update only when no step is due this soon (an update blocks interrupts about 241 µs) | above 241 | stats `led=`, `jit=` | low: step jitter; high: more forced shows |
 | `LED_SHOW_MAX_DEFER_MS` (100) [TUNE] | after this long without a gap, update anyway (counted) | 50-200 | stats `led=` | high: LEDs lag at full speed |

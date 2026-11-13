@@ -29,14 +29,14 @@
 //   accept_16_brightness_never_exceeds_the_limit_in_a_long_random_session
 //   accept_17_loop_never_blocks_and_the_stats_prove_it
 //   shell_matches_whole_words_only
-// SERVO ADJUST (the last section; scratch mutants of TurretState / Trigger / Leds / Lcd / Debug:
+// SERVO TEACH (the last section; scratch mutants of TurretState / Trigger / Leds / Lcd / Debug:
 // 19 of 22 killed alone; the 3 others are second layers: tryArm's teach guard and leaveTeach's
 // abort were killed together with the layer in front of them, and the flywheel cut on entering
 // is equivalent, because decideFlywheel cuts in the same update, and removing that is killed):
-//   servo_adjust_never_spins_the_flywheels_whatever_lb_or_the_flags_say
-//   servo_adjust_a_b_x_rt_and_the_d_pad_do_not_do_their_normal_actions
-//   servo_adjust_ends_on_link_loss_power_off_mode_toggle_fault_and_state_change
-//   servo_adjust_random_session_keeps_every_rule_and_the_brightness_clamp
+//   servo_teach_never_spins_the_flywheels_whatever_lb_or_the_flags_say
+//   servo_teach_a_b_x_rt_and_the_d_pad_do_not_do_their_normal_actions
+//   servo_teach_ends_on_link_loss_power_off_mode_toggle_fault_and_state_change
+//   servo_teach_random_session_keeps_every_rule_and_the_brightness_clamp
 //
 // SPDX-License-Identifier: MIT
 #include <algorithm>
@@ -69,18 +69,33 @@ const int16_t kStickMax = JOY_AXIS_RANGE - 1;            // full deflection on t
 const uint16_t kPulled = (uint16_t)(TRIGGER_AXIS_RANGE * (TRIGGER_PRESS_THRESHOLD + 1.0f) / 2.0f);
 const uint16_t kBetween = (uint16_t)(TRIGGER_AXIS_RANGE * (TRIGGER_PRESS_THRESHOLD + TRIGGER_RELEASE_THRESHOLD) / 2.0f);
 const uint16_t kReleased = (uint16_t)(TRIGGER_AXIS_RANGE * TRIGGER_RELEASE_THRESHOLD / 2.0f);
-// The trigger stroke at config.h's angles (Trigger.h): a sweep out at TRIGGER_SWEEP_DEG_PER_S that
-// lands at the first whole ms whose distance at the rate covers REST -> FIRE, FIRE held
-// TRIGGER_FORWARD_MS, the sweep back, REST held TRIGGER_RETURN_MS; then, in semi auto,
-// TRIGGER_COOLDOWN_MS before the next stroke may start.
+// One shot at config.h's angles (Trigger.h), from PRE-FIRE with darts left: each sweep at
+// TRIGGER_SWEEP_DEG_PER_S lands at the first whole ms whose distance at the rate covers it;
+// PRE-FIRE -> FIRE, FIRE held TRIGGER_FORWARD_MS, -> REST, REST held TRIGGER_RETURN_MS, [with
+// TRIGGER_CLEAR_ENABLED: -> CLEAR, held TRIGGER_CLEAR_HOLD_MS, -> REST, held TRIGGER_RETURN_MS]
+// (the shot counts), -> PRE-FIRE,
+// held TRIGGER_CHAMBER_MS; then, in
+// semi auto, TRIGGER_COOLDOWN_MS before the next stroke may start.
 uint32_t sweepMsFor(float spanDeg) {
   if (!(TRIGGER_SWEEP_DEG_PER_S > 0.0f) || !(spanDeg > 0.0f)) return 0;
   uint32_t ms = 0;
   while (TRIGGER_SWEEP_DEG_PER_S * (float)ms / (float)MS_PER_S < spanDeg) ms++;
   return ms;
 }
-const uint32_t kSweepMs = sweepMsFor(std::fabs((float)TRIGGER_FIRE_ANGLE - (float)TRIGGER_REST_ANGLE));
-const uint32_t kStrokeMs = kSweepMs + TRIGGER_FORWARD_MS + kSweepMs + TRIGGER_RETURN_MS;
+const uint32_t kSweepMs = sweepMsFor(std::fabs((float)TRIGGER_FIRE_ANGLE - (float)TRIGGER_PREFIRE_ANGLE));
+const uint32_t kBackMs = sweepMsFor(std::fabs((float)TRIGGER_FIRE_ANGLE - (float)TRIGGER_REST_ANGLE));
+const uint32_t kClearSweepMs = sweepMsFor(std::fabs((float)TRIGGER_CLEAR_ANGLE - (float)TRIGGER_REST_ANGLE));
+const uint32_t kChamberSweepMs = sweepMsFor(std::fabs((float)TRIGGER_PREFIRE_ANGLE - (float)TRIGGER_REST_ANGLE));
+// Pull to the shot counting, and to the end of the whole sequence (the next shot available).
+// The CLEAR visit: REST -> CLEAR, held, -> REST, held again.
+const uint32_t kClearVisitMs = kClearSweepMs + TRIGGER_CLEAR_HOLD_MS + kClearSweepMs + TRIGGER_RETURN_MS;
+uint32_t countMsFor(bool clear) {
+  return kSweepMs + TRIGGER_FORWARD_MS + kBackMs + TRIGGER_RETURN_MS + (clear ? kClearVisitMs : 0u);
+}
+const uint32_t kCountMs = countMsFor(TRIGGER_CLEAR_ENABLED);
+// Full auto, trigger held: every shot after the first starts from REST (REST -> FIRE -> REST ...).
+const uint32_t kBurstMs = kCountMs - kSweepMs + kBackMs;
+const uint32_t kStrokeMs = kCountMs + kChamberSweepMs + TRIGGER_CHAMBER_MS;
 const uint32_t kCoolMs = TRIGGER_COOLDOWN_MS;
 // A stroke's first phase (no sweep configured: straight to the FIRE hold).
 const Trigger::Phase kFirstPhase = kSweepMs ? Trigger::Phase::SWEEP_OUT : Trigger::Phase::HOLD_FIRE;
@@ -218,14 +233,8 @@ struct Rig {
   uint32_t ledShows = 0;            // hal_host::ledShowCount() at the last step
   std::function<void()> onShow;     // test hook, after a step that showed a LED frame
 
-  // keepStore: hal_host::reboot() instead of reset(), so the App boots on the settings store
-  // the previous one left (a power cycle of the board).
-  explicit Rig(const App::Config& cfg = App::defaults(), bool powerOn = true, bool wifi = false,
-               bool keepStore = false) {
-    if (keepStore)
-      hal_host::reboot();
-    else
-      hal_host::reset();
+  explicit Rig(const App::Config& cfg = App::defaults(), bool powerOn = true, bool wifi = false) {
+    hal_host::reset();
     setPower(powerOn);
     setWifi(wifi);
     hal_host::setTiltBottomStop(true, stopSteps());
@@ -350,18 +359,23 @@ struct Rig {
   // idle, which here is one byte per loop. Running this long lets everything queued so far
   // (DEBUG_TX_BUFFER_BYTES at most) reach the wire, so its text lines are in `lines`.
   void flush() { runMs(DEBUG_TX_BUFFER_BYTES * kStepUs / US_PER_MS + 1); }
-  // A shell line on USB, and enough time for its reply to leave (one byte per loop). A command
-  // that saved SERVO ADJUST's angles blocked one loop for hal_host::storeSaveUs() of virtual time,
-  // so its reply leaves after that: the same time again.
+  // A shell line on USB, and enough time for its reply to leave (one byte per loop).
   std::string shell(const std::string& line) {
     const size_t from = lines.size();
-    const uint32_t saves = hal_host::storeSaves();
     hal_host::usbInject(line + "\n");
     runMs(kCtrlMs * 4);
-    if (hal_host::storeSaves() != saves) runMs(kCtrlMs * 4);
     std::string reply;
     for (size_t k = from; k < lines.size(); k++) reply += lines[k] + "\n";
     return reply;
+  }
+  // The whole `status` reply (its lines outlast shell()'s wait), as one text.
+  std::string statusText() {
+    const size_t from = lines.size();
+    shell("status");
+    flush();
+    std::string text;
+    for (size_t k = from; k < lines.size(); k++) text += lines[k] + "\n";
+    return text;
   }
   // Hold a button for a few packets, then release it past the debounce lockout.
   void press(uint16_t button) {
@@ -370,11 +384,21 @@ struct Rig {
     pad.buttons = (uint16_t)(pad.buttons & ~button);
     runMs(BUTTON_DEBOUNCE_MS + kCtrlMs * 2);
   }
-  // Power on (already on in the constructor) -> BOOT -> CALIBRATING -> PAIRING -> DISARMED.
-  bool toDisarmed() {
-    return runUntil([&] { return state() == DS_STATE_DISARMED; },
-                    (uint64_t)(TILT_CAL_MAX_TRAVEL_DEG / TILT_CAL_SPEED_DEG_PER_S * MS_PER_S) +
-                        TILT_CAL_SETTLE_MS + 3 * MS_PER_S);
+  // Power on (already on in the constructor) -> BOOT -> CALIBRATING -> PAIRING -> DISARMED, then
+  // (unless `load` is false) X: the magazine loaded (MAG_CAPACITY, servo at PRE-FIRE) and its
+  // chambering over. The boot ammo is TRIGGER_AMMO_AT_BOOT.
+  bool toDisarmed(bool load = true) {
+    const bool ok = runUntil([&] { return state() == DS_STATE_DISARMED; },
+                             (uint64_t)(TILT_CAL_MAX_TRAVEL_DEG / TILT_CAL_SPEED_DEG_PER_S * MS_PER_S) +
+                                 TILT_CAL_SETTLE_MS + 3 * MS_PER_S);
+    // The boot raise (TILT_BOOT_RAISE_DEG) is let finish first.
+    if (ok) runUntil([&] { return !motion().isMoving() && !motion().positionMoveActive(); },
+                     (uint64_t)(TILT_BOOT_RAISE_DEG / TILT_MAX_DEG_PER_S * MS_PER_S) + 2 * MS_PER_S);
+    if (ok && load && trigger().ammo() == 0) {   // X is a load / unload toggle
+      press(DS_BTN_X);
+      runMs(TRIGGER_CHAMBER_MS + kCtrlMs);
+    }
+    return ok;
   }
   bool toArmed() {
     if (!toDisarmed()) return false;
@@ -523,9 +547,13 @@ TEST(accept_02_boot_pulses_white_and_calibrates_against_the_panel) {
   CHECK(rig.motion().limitsActive(AXIS_TILT));
   rig.runMs(LCD_REFRESH_MS * 4);
   CHECK(startsWith(rig.lcd(1), std::string(LCD_TXT_MODE_BT) + " " + LCD_TXT_PAIRING));
-  CHECK_EQ(rig.lcd(0), padRow(LCD_TXT_DISARMED, ammoText(MAG_CAPACITY)));
+  CHECK_EQ(rig.lcd(0), padRow(LCD_TXT_DISARMED, ammoText(TRIGGER_AMMO_AT_BOOT)));
   CHECK(!rig.telemetry.empty() && (rig.telemetry.back().flags & DS_TELEM_FLAG_CALIBRATED));
-  CHECK_EQ(rig.telemetry.back().tiltCdeg, 0);
+  CHECK(rig.telemetry.back().tiltCdeg >= 0);
+  // ... then the barrel lifts to TILT_BOOT_RAISE_DEG on its own.
+  CHECK(rig.runUntil([&] { return !rig.motion().isMoving() && !rig.motion().positionMoveActive(); },
+                     (uint64_t)(TILT_BOOT_RAISE_DEG / TILT_MAX_DEG_PER_S * MS_PER_S) + 2 * MS_PER_S));
+  CHECK_NEAR(rig.motion().positionDeg(AXIS_TILT), TILT_BOOT_RAISE_DEG, 0.1f);
 }
 
 // 3. Pairing: LEDs pulse blue/white; LCD row 1 "BT Pairing" with dots cycling at
@@ -618,8 +646,10 @@ TEST(accept_04_stick_speed_follows_the_curve_and_respects_limits) {
   rig.runMs(MS_PER_S);
   CHECK_EQ(rig.motion().velocityDeg(AXIS_PAN), 0.0f);
   CHECK(!rig.motion().isMoving());
-  // Tilt up (stick up = negative on the wire) into the top soft limit and hold it there.
-  rig.pad.ry = -kStickMax;
+  // Tilt up into the top soft limit and hold it there (stick up = negative on the wire, unless
+  // JOY_INVERT_Y is false, when stick down raises the tilt).
+  const int16_t tiltUp = JOY_INVERT_Y ? (int16_t)-kStickMax : (int16_t)kStickMax;
+  rig.pad.ry = tiltUp;
   bool slowedNearLimit = false;
   rig.everyLoop = [&] {
     maxTilt = std::max(maxTilt, std::fabs(rig.motion().velocityDeg(AXIS_TILT)));
@@ -633,7 +663,7 @@ TEST(accept_04_stick_speed_follows_the_curve_and_respects_limits) {
   CHECK(slowedNearLimit);
   CHECK_NEAR(rig.motion().positionDeg(AXIS_TILT), TILT_RANGE_DEG, 0.5f);
   // ... and down to the bottom limit (0 = calibrated bottom + backoff).
-  rig.pad.ry = kStickMax;
+  rig.pad.ry = (int16_t)-tiltUp;
   rig.everyLoop = [&] { CHECK(rig.motion().positionDeg(AXIS_TILT) >= -1.0f / TILT_STEPS_PER_DEG); };
   rig.runMs((uint64_t)(TILT_RANGE_DEG / TILT_MAX_DEG_PER_S * MS_PER_S) + 2 * MS_PER_S);
   CHECK_NEAR(rig.motion().positionDeg(AXIS_TILT), 0.0f, 0.5f);
@@ -650,7 +680,7 @@ TEST(accept_05_home_set_go_home_and_stick_cancels) {
   Rig rig;
   CHECK(rig.toDisarmed());
   rig.pad.rx = -kStickMax;
-  rig.pad.ry = -kStickMax;
+  rig.pad.ry = JOY_INVERT_Y ? (int16_t)-kStickMax : (int16_t)kStickMax;   // tilt up
   rig.runMs(MS_PER_S / 2);
   rig.pad.rx = rig.pad.ry = 0;
   rig.runMs(MS_PER_S / 2);
@@ -659,8 +689,8 @@ TEST(accept_05_home_set_go_home_and_stick_cancels) {
   rig.press(DS_BTN_DPAD_LEFT);
   CHECK_NEAR(rig.motion().homeDeg(AXIS_PAN), homePan, 0.01f);
   CHECK_NEAR(rig.motion().homeDeg(AXIS_TILT), homeTilt, 0.01f);
-  rig.pad.rx = kStickMax;
-  rig.runMs(MS_PER_S);
+  rig.pad.rx = kStickMax;   // about 90 deg away: under half a turn, so home comes back this way
+  rig.runMs((uint64_t)(90.0f / PAN_MAX_DEG_PER_S * MS_PER_S));
   rig.pad.rx = 0;
   rig.runMs(MS_PER_S / 2);
   CHECK(rig.motion().positionDeg(AXIS_PAN) < homePan - 30.0f);
@@ -725,9 +755,7 @@ TEST(accept_06_a_arms_and_disarms_and_arm_refused_while_the_trigger_is_held) {
   rig.press(DS_BTN_A);
   CHECK_EQ(rig.state(), (uint8_t)DS_STATE_ARMED);
   rig.runMs(LCD_REFRESH_MS * 4);
-  // Armed with the flywheels still: yellow (a pull would not fire) unless the trigger may fire
-  // without them.
-  CHECK(allLeds(scaled(FIRE_REQUIRES_FLYWHEEL ? LED_COLOR_ARMED_WAIT : LED_COLOR_ARMED_READY)));
+  CHECK(allLeds(scaled(LED_COLOR_ARMED_SEMI)));
   CHECK(startsWith(rig.lcd(0), LCD_TXT_ARMED));
   CHECK(rig.lcd(0).find(ammoText(MAG_CAPACITY)) != std::string::npos);
   rig.press(DS_BTN_A);
@@ -776,8 +804,7 @@ TEST(arm_with_the_trigger_held_never_fires_that_pull) {
   CHECK_EQ(rig.trigger().shotsTotal(), (uint16_t)1);
 }
 
-// 7. B toggles semi/full (the LCD shows ARMED S / F; since the owner's 2026-11-03 scheme the LEDs
-//    show readiness, not the mode, so they do not change); B works in any state.
+// 7. B toggles semi/full: LEDs yellow <-> orange while armed; B works in any state.
 TEST(accept_07_b_toggles_semi_full_in_any_state) {
   Rig rig;
   CHECK(rig.toDisarmed());
@@ -785,13 +812,12 @@ TEST(accept_07_b_toggles_semi_full_in_any_state) {
   CHECK_EQ(rig.trigger().fireMode(), (uint8_t)DS_FIRE_MODE_FULL);   // DISARMED too
   rig.press(DS_BTN_A);
   rig.runMs(LCD_REFRESH_MS * 4);
-  const Rgb armedColour = scaled(FIRE_REQUIRES_FLYWHEEL ? LED_COLOR_ARMED_WAIT : LED_COLOR_ARMED_READY);
-  CHECK(allLeds(armedColour));
+  CHECK(allLeds(scaled(LED_COLOR_ARMED_FULL)));
   if (LCD_TXT_SHOW_FIRE_MODE) CHECK(startsWith(rig.lcd(0), std::string(LCD_TXT_ARMED) + LCD_TXT_FIRE_FULL));
   rig.press(DS_BTN_B);
   rig.runMs(LCD_REFRESH_MS * 4);
   CHECK_EQ(rig.trigger().fireMode(), (uint8_t)DS_FIRE_MODE_SEMI);
-  CHECK(allLeds(armedColour));                                      // same colour in both modes
+  CHECK(allLeds(scaled(LED_COLOR_ARMED_SEMI)));
   if (LCD_TXT_SHOW_FIRE_MODE) CHECK(startsWith(rig.lcd(0), std::string(LCD_TXT_ARMED) + LCD_TXT_FIRE_SEMI));
   // During a calibration (shell `cal` from DISARMED) B still works.
   rig.press(DS_BTN_A);
@@ -873,7 +899,7 @@ TEST(accept_09_semi_auto_one_stroke_per_pull_with_hysteresis) {
   rig.pad.rt = kPulled;
   rig.runMs(kStrokeMs * 2);
   CHECK_EQ(rig.trigger().shotsTotal(), (uint16_t)0);
-  CHECK_EQ(servoLogical(), (float)TRIGGER_REST_ANGLE);
+  CHECK_EQ(servoLogical(), (float)TRIGGER_PREFIRE_ANGLE);
   rig.pad.rt = 0;
   rig.runMs(kCtrlMs * 3);
   CHECK(rig.toArmedSpunUp());
@@ -884,7 +910,7 @@ TEST(accept_09_semi_auto_one_stroke_per_pull_with_hysteresis) {
   CHECK(sawFire);
   CHECK_EQ(rig.trigger().shotsTotal(), (uint16_t)1);
   CHECK_EQ(rig.trigger().ammo(), (uint8_t)(MAG_CAPACITY - 1));
-  CHECK_EQ(servoLogical(), (float)TRIGGER_REST_ANGLE);
+  CHECK_EQ(servoLogical(), (float)TRIGGER_PREFIRE_ANGLE);
   // Between the thresholds is still "pulled": back up past the press threshold, no new pull.
   rig.pad.rt = kBetween;
   rig.runMs(kCtrlMs * 5);
@@ -901,27 +927,32 @@ TEST(accept_09_semi_auto_one_stroke_per_pull_with_hysteresis) {
   rig.everyLoop = nullptr;
 }
 
-// Semi cooldown (owner, 2026-11-03): after a stroke completes, no new one starts for
+// Semi cooldown (owner, 2026-11-03): after a shot's sequence ends, no new one starts for
 // TRIGGER_COOLDOWN_MS; a pull still held when it ends fires on the spot, a tap inside it is
-// dropped. The magazine loses one dart at each completion and never while a stroke runs.
+// dropped. The magazine loses one dart per shot, exactly kCountMs after its start (back at REST
+// and paused), never at any other moment.
 TEST(semi_cooldown_after_each_stroke_and_ammo_only_on_completion) {
   Rig rig;
   CHECK(rig.toArmedSpunUp());
   std::vector<int64_t> starts, ends;
   std::vector<uint8_t> ammoAtEnd;
-  bool active = false, ammoMidStroke = false;
-  uint8_t ammoAtStart = 0;
+  std::vector<int64_t> counts;
+  bool active = false, ammoElsewhere = false;
+  uint8_t ammoWas = 0;
   rig.everyLoop = [&] {   // sees the state the previous loop left
     const bool a = rig.trigger().strokeActive();
-    if (a && !active) {
-      starts.push_back(rig.ms());
-      ammoAtStart = rig.trigger().ammo();
-    }
+    if (a && !active) starts.push_back(rig.ms());
     if (!a && active) {
       ends.push_back(rig.ms());
       ammoAtEnd.push_back(rig.trigger().ammo());
     }
-    ammoMidStroke = ammoMidStroke || (a && rig.trigger().ammo() != ammoAtStart);
+    if (rig.trigger().ammo() != ammoWas && !starts.empty()) {
+      if (a)
+        counts.push_back(rig.ms());
+      else
+        ammoElsewhere = true;
+    }
+    ammoWas = rig.trigger().ammo();
     active = a;
   };
   // Pull, let go mid-stroke, pull again and hold: the second stroke waits out the cooldown.
@@ -949,8 +980,13 @@ TEST(semi_cooldown_after_each_stroke_and_ammo_only_on_completion) {
     CHECK_EQ(ends[1] - starts[1], (int64_t)kStrokeMs);
     CHECK_EQ(ammoAtEnd[0], (uint8_t)(MAG_CAPACITY - 1));
     CHECK_EQ(ammoAtEnd[1], (uint8_t)(MAG_CAPACITY - 2));
+    CHECK_EQ(counts.size(), (size_t)2);
+    if (counts.size() == 2) {
+      CHECK(counts[0] - starts[0] >= (int64_t)kCountMs - 1 && counts[0] - starts[0] <= (int64_t)kCountMs);
+      CHECK_EQ(counts[1] - starts[1], (int64_t)kCountMs);
+    }
   }
-  CHECK(!ammoMidStroke);
+  CHECK(!ammoElsewhere);
   CHECK_EQ(rig.trigger().shotsTotal(), (uint16_t)2);
   CHECK_EQ(rig.trigger().ammo(), (uint8_t)(MAG_CAPACITY - 2));
 }
@@ -969,7 +1005,7 @@ TEST(disarmed_never_fires_even_with_the_flywheel_gates_off) {
   rig.pad.rt = kPulled;
   rig.runMs(kStrokeMs * 3);
   CHECK_EQ(rig.trigger().shotsTotal(), (uint16_t)0);
-  CHECK_EQ(servoLogical(), (float)TRIGGER_REST_ANGLE);
+  CHECK_EQ(servoLogical(), (float)TRIGGER_PREFIRE_ANGLE);
   CHECK(rig.shell("fire").find("fire: refused: not in this state") != std::string::npos);
   CHECK_EQ(rig.trigger().shotsTotal(), (uint16_t)0);
   rig.pad.rt = kReleased;
@@ -982,28 +1018,34 @@ TEST(disarmed_never_fires_even_with_the_flywheel_gates_off) {
 }
 
 // 10. Full auto: strokes back-to-back while held, no gap; release finishes the current stroke.
+//     (owner, 2026-11-04) The first from PRE-FIRE (kCountMs), every next one straight from REST
+//     (kBurstMs) with no PRE-FIRE visit; after the release the last one chambers to PRE-FIRE.
 TEST(accept_10_full_auto_back_to_back_and_release_finishes_the_stroke) {
   Rig rig;
   CHECK(rig.toArmedSpunUp());
   rig.press(DS_BTN_B);
   CHECK_EQ(rig.trigger().fireMode(), (uint8_t)DS_FIRE_MODE_FULL);
   std::vector<uint64_t> starts;
-  bool forward = false;
+  bool forward = false, chambered = false;
   rig.everyLoop = [&] {
-    const bool f = rig.trigger().phase() == kFirstPhase;
+    const Trigger::Phase p = rig.trigger().phase();
+    const bool f = p == kFirstPhase;
     if (f && !forward) starts.push_back(rig.us());
     forward = f;
+    chambered = chambered || p == Trigger::Phase::SWEEP_CHAMBER || p == Trigger::Phase::HOLD_CHAMBER;
   };
   rig.pad.rt = kPulled;
   const uint32_t shots = 4;
   rig.runUntil([&] { return starts.size() >= shots + 1; }, (shots + 2) * kStrokeMs);
   CHECK(starts.size() >= shots + 1);
-  // No gap: consecutive strokes start one stroke period apart (whole-ms phase timing, so
-  // within one millisecond either side).
+  // No gap: the second stroke starts as the first one counts, each later one one burst cycle
+  // after its predecessor (whole-ms phase timing, so within one millisecond either side).
   for (size_t k = 1; k < starts.size(); k++) {
-    CHECK(starts[k] - starts[k - 1] + US_PER_MS >= (uint64_t)kStrokeMs * US_PER_MS);
-    CHECK(starts[k] - starts[k - 1] <= (uint64_t)kStrokeMs * US_PER_MS + US_PER_MS);
+    const uint64_t want = (uint64_t)(k == 1 ? kCountMs : kBurstMs) * US_PER_MS;
+    CHECK(starts[k] - starts[k - 1] + US_PER_MS >= want);
+    CHECK(starts[k] - starts[k - 1] <= want + US_PER_MS);
   }
+  CHECK(!chambered);                                     // never to PRE-FIRE while held
   // Release mid-stroke: that stroke completes (ammo - 1), no new one starts.
   rig.runMs(TRIGGER_FORWARD_MS / 2);
   CHECK(rig.trigger().strokeActive());
@@ -1013,60 +1055,38 @@ TEST(accept_10_full_auto_back_to_back_and_release_finishes_the_stroke) {
   CHECK_EQ(rig.trigger().shotsTotal(), (uint16_t)(before + 1));
   CHECK(!rig.trigger().strokeActive());
   CHECK_EQ(rig.trigger().ammo(), (uint8_t)(MAG_CAPACITY - rig.trigger().shotsTotal()));
+  CHECK(chambered);                                      // the released stroke chambered
+  CHECK_EQ(servoLogical(), (float)TRIGGER_PREFIRE_ANGLE);
   rig.everyLoop = nullptr;
 }
 
-// 11. Each stroke: all LEDs show it for at least LED_FIRE_FLASH_MIN_MS (the owner's scheme of
-//     2026-11-03: ARMED yellow "next shot not ready" from the stroke's start for the whole stroke,
-//     its sweeps and holds, and the semi cooldown after it; red again once a pull would fire); a
-//     rumble command of the configured strength / duration goes out (USB StatusPacket, new
-//     rumbleSeq per stroke).
-TEST(accept_11_each_stroke_shows_yellow_then_red_and_sends_one_rumble) {
+// 11. Each stroke: all LEDs red for at least LED_FIRE_FLASH_MIN_MS; a rumble command of the
+//     configured strength / duration goes out (USB StatusPacket, new rumbleSeq per stroke).
+TEST(accept_11_each_stroke_shows_red_and_sends_one_rumble) {
   Rig rig;
   CHECK(rig.toArmedSpunUp());
-  const Rgb red = scaled(LED_COLOR_ARMED_READY);
-  const Rgb yellow = scaled(LED_COLOR_ARMED_WAIT);
-  const uint64_t frameUs = (uint64_t)MS_PER_S / LED_REFRESH_HZ * US_PER_MS;
-  rig.runMs(kCtrlMs * 3);
-  CHECK(allLeds(red));                                 // spun up, idle: a pull would fire
-  uint64_t start = 0, end = 0, firstYellow = 0, lastYellow = 0;
-  bool yellowWhileStroke = true, yellowWhileCooling = true, redAfter = true;
-  uint32_t showsAfter = 0, showsCooling = 0;
-  // After the stroke: the semi cooldown (and whatever is left of the LED hold) keeps it yellow.
-  const uint64_t yellowAfterUs = (uint64_t)std::max<uint32_t>(kCoolMs, LED_FIRE_FLASH_MIN_MS) * US_PER_MS;
+  const Rgb red = scaled(LED_COLOR_FIRING);
+  uint64_t start = 0, firstRed = 0, lastRed = 0;
+  bool redWhileStroke = true;
   rig.onShow = [&] {
-    const bool isYellow = allLeds(yellow);
-    if (isYellow && !firstYellow) firstYellow = rig.us();
-    if (isYellow) lastYellow = rig.us();
-    if (rig.trigger().strokeActive() && start && rig.us() - start > frameUs)
-      yellowWhileStroke = yellowWhileStroke && isYellow;
-    if (end && rig.us() - end + frameUs < (uint64_t)kCoolMs * US_PER_MS) {
-      yellowWhileCooling = yellowWhileCooling && isYellow;
-      showsCooling++;
-    }
-    if (end && rig.us() - end > frameUs + yellowAfterUs) {
-      redAfter = redAfter && allLeds(red);   // semi, still held: a fresh pull would fire
-      showsAfter++;
-    }
+    const bool isRed = allLeds(red);
+    if (isRed && !firstRed) firstRed = rig.us();
+    if (isRed) lastRed = rig.us();
+    if (rig.trigger().strokeActive() && start && rig.us() - start > (uint64_t)MS_PER_S / LED_REFRESH_HZ * US_PER_MS)
+      redWhileStroke = redWhileStroke && isRed;
   };
   rig.everyLoop = [&] {
     if (!start && rig.trigger().strokeActive()) start = rig.us();
-    if (start && !end && !rig.trigger().strokeActive()) end = rig.us();
   };
   const size_t st0 = rig.statuses.size();
   const uint8_t seq0 = rig.lastStatus().rumbleSeq;
   rig.pad.rt = kPulled;
   rig.runMs(kStrokeMs + LED_FIRE_FLASH_MIN_MS + kCtrlMs * 5);
-  rig.runMs(std::max<uint32_t>(kCoolMs, LED_FIRE_FLASH_MIN_MS) + 4 * MS_PER_S / LED_REFRESH_HZ);   // still held, idle
   CHECK(start > 0u);
-  CHECK(end > start);
-  CHECK(firstYellow > 0u);
-  CHECK(firstYellow - start <= (uint64_t)(MS_PER_S / LED_REFRESH_HZ + LED_SHOW_MAX_DEFER_MS) * US_PER_MS);
-  CHECK(lastYellow - firstYellow >= (uint64_t)LED_FIRE_FLASH_MIN_MS * US_PER_MS - frameUs);
-  CHECK(yellowWhileStroke);
-  CHECK(yellowWhileCooling && (kCoolMs <= 2 * frameUs / US_PER_MS || showsCooling > 0u));
-  CHECK(showsAfter > 0u && redAfter);
-  CHECK(allLeds(red));
+  CHECK(firstRed > 0u);
+  CHECK(firstRed - start <= (uint64_t)(MS_PER_S / LED_REFRESH_HZ + LED_SHOW_MAX_DEFER_MS) * US_PER_MS);
+  CHECK(lastRed - firstRed >= (uint64_t)LED_FIRE_FLASH_MIN_MS * US_PER_MS - (uint64_t)MS_PER_S / LED_REFRESH_HZ * US_PER_MS);
+  CHECK(redWhileStroke);
   // The rumble: exactly one new rumbleSeq, with the configured strength and duration.
   std::vector<ds_status_packet_t> rumbles;
   uint8_t prev = seq0;
@@ -1092,11 +1112,10 @@ TEST(accept_11_each_stroke_shows_yellow_then_red_and_sends_one_rumble) {
   rig.everyLoop = nullptr;
 }
 
-// 12. Ammo 0 (the owner's change of 2026-11-03: FIRE_LOCKOUT_WHEN_EMPTY false): the trigger still
-//     fires, semi and full auto, and the count stays at 0; the LEDs double-flash purple over the
-//     colour they show anyway (ARMED red / yellow, DISARMED green), whether or not the trigger is
-//     pulled, until X restores MAG_CAPACITY.
-TEST(accept_12_empty_magazine_keeps_firing_flashes_purple_and_x_restores) {
+// 12. Ammo 0 -> trigger ignored (lockout), magenta blink while held; X restores MAG_CAPACITY
+//     and firing resumes. The last dart leaves the servo at REST (the reload position); X sends
+//     it to PRE-FIRE.
+TEST(accept_12_empty_magazine_locks_out_blinks_magenta_and_x_restores) {
   Rig rig;
   CHECK(rig.toArmedSpunUp());
   for (unsigned k = 0; k < MAG_CAPACITY; k++) {   // each pull: one stroke, then the semi cooldown
@@ -1107,164 +1126,151 @@ TEST(accept_12_empty_magazine_keeps_firing_flashes_purple_and_x_restores) {
   }
   CHECK_EQ(rig.trigger().ammo(), (uint8_t)0);
   CHECK_EQ(rig.trigger().shotsTotal(), (uint16_t)MAG_CAPACITY);
-  CHECK(rig.app->turret().display().emptyMagBlink);   // at once, trigger released
+  CHECK_EQ(servoLogical(), (float)TRIGGER_REST_ANGLE);
   rig.runMs(LCD_REFRESH_MS * 4);
   CHECK(rig.lcd(0).find(ammoText(0)) != std::string::npos);
-  CHECK(!rig.telemetry.empty() && (rig.telemetry.back().flags & DS_TELEM_FLAG_EMPTY_MAG_BLINK));
-  const Rgb purple = scaled(LED_COLOR_EMPTY_MAG);
-  const Rgb red = scaled(LED_COLOR_ARMED_READY);
-  const Rgb yellow = scaled(LED_COLOR_ARMED_WAIT);
-  const Rgb green = scaled(LED_COLOR_DISARMED);
-  struct Count {
-    uint32_t purple = 0, red = 0, yellow = 0, green = 0, other = 0;
-  } n;
-  rig.onShow = [&] {
-    if (allLeds(purple)) n.purple++;
-    else if (allLeds(red)) n.red++;
-    else if (allLeds(yellow)) n.yellow++;
-    else if (allLeds(green)) n.green++;
-    else n.other++;
-  };
-  // Idle at 0: purple flashes over red (a pull would fire), most of each period red.
-  rig.runMs(2 * LED_EMPTY_FLASH_PERIOD_MS);
-  CHECK(n.purple > 0u && n.red > n.purple);
-  CHECK_EQ(n.yellow + n.green + n.other, 0u);
-  // Pulled at 0: it fires, the count stays 0, and the stroke shows yellow under the flashes.
-  n = Count();
+  const Rgb magenta = scaled(LED_COLOR_EMPTY_MAG);
+  uint32_t magentaShows = 0, otherShows = 0;
+  rig.onShow = [&] { (allLeds(magenta) ? magentaShows : otherShows)++; };
   rig.pad.rt = kPulled;
-  rig.runMs(kStrokeMs + kCtrlMs * 2);
-  CHECK_EQ(rig.trigger().shotsTotal(), (uint16_t)(MAG_CAPACITY + 1));
-  CHECK_EQ(rig.trigger().ammo(), (uint8_t)0);
-  CHECK(n.yellow > 0u);
-  CHECK_EQ(n.green + n.other, 0u);
+  rig.runMs(4 * LED_FAULT_BLINK_MS);
+  rig.onShow = nullptr;
+  if (FIRE_LOCKOUT_WHEN_EMPTY) {
+    CHECK_EQ(rig.trigger().shotsTotal(), (uint16_t)MAG_CAPACITY);   // ignored
+    CHECK(magentaShows > 0u && otherShows > 0u);                    // a blink, not solid
+    CHECK(rig.app->turret().display().emptyMagBlink);
+    CHECK(!rig.telemetry.empty() && (rig.telemetry.back().flags & DS_TELEM_FLAG_EMPTY_MAG_BLINK));
+  }
   rig.pad.rt = kReleased;
   rig.runMs(kCtrlMs * 3);
-  // Full auto at 0, held: back to back, the count still 0, never a red frame while it cycles.
-  rig.press(DS_BTN_B);
-  CHECK_EQ(rig.trigger().fireMode(), (uint8_t)DS_FIRE_MODE_FULL);
-  rig.pad.rt = kPulled;
-  CHECK(rig.runUntil([&] { return rig.trigger().strokeActive(); }, kCtrlMs * 3));
-  n = Count();
-  rig.runMs(3 * kStrokeMs);
-  CHECK(rig.trigger().shotsTotal() >= (uint16_t)(MAG_CAPACITY + 1 + 3));
-  CHECK_EQ(rig.trigger().ammo(), (uint8_t)0);
-  CHECK(n.yellow > 0u && n.purple > 0u);
-  CHECK_EQ(n.red + n.green + n.other, 0u);
-  rig.pad.rt = kReleased;
-  rig.runMs(kStrokeMs * 2);
-  CHECK(!rig.trigger().strokeActive());
-  // DISARMED at 0: still flashing, over green.
-  rig.press(DS_BTN_A);
-  CHECK_EQ(rig.state(), (uint8_t)DS_STATE_DISARMED);
-  CHECK(rig.app->turret().display().emptyMagBlink);
-  rig.runMs(kCtrlMs * 3);
-  n = Count();
-  rig.runMs(2 * LED_EMPTY_FLASH_PERIOD_MS);
-  CHECK(n.purple > 0u && n.green > n.purple);
-  CHECK_EQ(n.red + n.yellow + n.other, 0u);
-  // X: MAG_CAPACITY, the flashing stops at once, plain green.
+  CHECK(!rig.app->turret().display().emptyMagBlink);   // only while held
   rig.press(DS_BTN_X);
   CHECK_EQ(rig.trigger().ammo(), (uint8_t)MAG_CAPACITY);
-  CHECK(!rig.app->turret().display().emptyMagBlink);
-  n = Count();
-  rig.runMs(2 * LED_EMPTY_FLASH_PERIOD_MS);
-  CHECK(n.green > 0u);
-  CHECK_EQ(n.purple + n.red + n.yellow + n.other, 0u);
-  CHECK(!(rig.telemetry.back().flags & DS_TELEM_FLAG_EMPTY_MAG_BLINK));
-  rig.onShow = nullptr;
-  // Armed again (LB still held): firing goes on from the full magazine.
-  rig.press(DS_BTN_A);
-  CHECK_EQ(rig.state(), (uint8_t)DS_STATE_ARMED);
-  rig.runMs(FLYWHEEL_SPINUP_MS + kCtrlMs * 3);
-  const uint16_t before = rig.trigger().shotsTotal();
+  CHECK_EQ(servoLogical(), (float)TRIGGER_PREFIRE_ANGLE);
   rig.pad.rt = kPulled;
   rig.runMs(kStrokeMs + kCtrlMs * 3);
-  CHECK(rig.trigger().shotsTotal() > before);
-  CHECK(rig.trigger().ammo() < (uint8_t)MAG_CAPACITY);
+  CHECK_EQ(rig.trigger().shotsTotal(), (uint16_t)(MAG_CAPACITY + 1));
 }
 
-// Full auto with the trigger held (the owner's rule, 2026-11-03): the LEDs stay yellow from
-// stroke to stroke, never one red frame in between. TurretState publishes before Trigger runs,
-// and Trigger starts the next stroke in the update that completes the last, so every display
-// model while it cycles says "not ready"; checked after every loop and on every shown frame.
-TEST(full_auto_held_stays_yellow_between_strokes) {
+// D-pad up in ARMED toggles the flywheels (the latch): normal ramp and spin-up gate, LB release
+// does not cut them, d-pad up again does; a disarm, link loss and power off cut them as before;
+// in DISARMED d-pad up does nothing.
+TEST(dpad_up_latches_the_flywheels_in_armed_only) {
   Rig rig;
-  CHECK(rig.toArmedSpunUp());
-  rig.press(DS_BTN_B);
-  CHECK_EQ(rig.trigger().fireMode(), (uint8_t)DS_FIRE_MODE_FULL);
+  CHECK(rig.toDisarmed());
+  rig.press(DS_BTN_DPAD_UP);                                   // DISARMED: nothing
+  CHECK(!rig.app->flywheel().on());
+  CHECK(!rig.app->turret().status().flywheelLatch);
+  rig.press(DS_BTN_A);
+  CHECK_EQ(rig.state(), (uint8_t)DS_STATE_ARMED);
+  rig.pad.buttons = DS_BTN_DPAD_UP;
+  CHECK(rig.runUntil([&] { return rig.app->flywheel().on(); }, kCtrlMs * 3));
+  CHECK(rig.app->flywheel().duty() < FLYWHEEL_DUTY_255);      // ramping, not a step
+  CHECK(!rig.app->flywheel().ready(rig.ms()));                 // the spin-up gate still applies
+  rig.pad.buttons = 0;
+  rig.runMs(FLYWHEEL_SPINUP_MS + kCtrlMs * 2);
+  CHECK(rig.app->flywheel().ready(rig.ms()));
+  CHECK_EQ(rig.app->flywheel().duty(), (uint8_t)FLYWHEEL_DUTY_255);
+  // LB held and released: the latch keeps them on.
+  rig.press(DS_BTN_LB);
   rig.runMs(kCtrlMs * 3);
-  CHECK(allLeds(scaled(LED_COLOR_ARMED_READY)));
-  rig.pad.rt = kPulled;
-  CHECK(rig.runUntil([&] { return rig.trigger().strokeActive(); }, kCtrlMs * 3));
-  rig.runMs(1);   // the loop after the start has published "not ready"
-  const uint16_t shots0 = rig.trigger().shotsTotal();
-  bool readySeen = false, redShown = false, otherShown = false;
-  uint32_t yellowShows = 0, loops = 0;
-  rig.everyLoop = [&] {   // the model the previous loop() left for the LEDs
-    loops++;
-    readySeen = readySeen || rig.app->turret().display().fireReady;
-  };
-  rig.onShow = [&] {
-    if (allLeds(scaled(LED_COLOR_ARMED_WAIT))) yellowShows++;
-    else if (allLeds(scaled(LED_COLOR_ARMED_READY))) redShown = true;
-    else otherShown = true;
-  };
-  const uint32_t strokes = 4;
-  rig.runMs(strokes * kStrokeMs);
-  rig.everyLoop = nullptr;
-  rig.onShow = nullptr;
-  CHECK(rig.trigger().shotsTotal() >= (uint16_t)(shots0 + strokes - 1));
-  CHECK(rig.trigger().ammo() > 0u);   // not into the empty flash
-  CHECK(loops > 0u && yellowShows > 0u);
-  CHECK(!readySeen);
-  CHECK(!redShown);
-  CHECK(!otherShown);
-  // Released: the running stroke finishes, then red.
-  rig.pad.rt = kReleased;
-  rig.runMs(kStrokeMs + LED_FIRE_FLASH_MIN_MS + kCtrlMs * 5);
-  CHECK(!rig.trigger().strokeActive());
-  CHECK(rig.app->turret().display().fireReady);
-  CHECK(allLeds(scaled(LED_COLOR_ARMED_READY)));
-}
-
-// Yellow while the flywheels spin up (FIRE_REQUIRES_FLYWHEEL), red once a pull would fire, and
-// yellow for the stroke of a shell `fire` and the semi cooldown after it too.
-TEST(armed_is_yellow_through_spin_up_and_shell_fire_then_red) {
-  Rig rig;
-  CHECK(rig.toArmed());
-  rig.runMs(kCtrlMs * 3);
-  const Rgb red = scaled(LED_COLOR_ARMED_READY);
-  const Rgb yellow = scaled(LED_COLOR_ARMED_WAIT);
-  if (FIRE_REQUIRES_FLYWHEEL) {
-    CHECK(allLeds(yellow));
-    CHECK(!rig.app->turret().display().fireReady);
+  CHECK(rig.app->flywheel().on());
+  // D-pad up again: off; LB hold still works on its own.
+  rig.press(DS_BTN_DPAD_UP);
+  CHECK(!rig.app->flywheel().on());
+  if (FLYWHEEL_HOLD_MODE) {
     rig.pad.buttons = DS_BTN_LB;
-    CHECK(rig.runUntil([&] { return rig.app->flywheel().on(); }, kCtrlMs * 3));
-    const uint32_t on = rig.app->flywheel().onSinceMs();
-    bool redEarly = false;
-    rig.onShow = [&] { redEarly = redEarly || (allLeds(red) && rig.ms() - on + 1 < FLYWHEEL_SPINUP_MS); };
-    rig.runMs(FLYWHEEL_SPINUP_MS / 2);
-    CHECK(allLeds(yellow));                          // still spinning up
-    rig.runMs(FLYWHEEL_SPINUP_MS / 2 + 2 * MS_PER_S / LED_REFRESH_HZ + kCtrlMs);
-    rig.onShow = nullptr;
-    CHECK(!redEarly);
+    rig.runMs(kCtrlMs * 3);
+    CHECK(rig.app->flywheel().on());
+    rig.pad.buttons = 0;
+    rig.runMs(kCtrlMs * 3);
+    CHECK(!rig.app->flywheel().on());
   }
-  CHECK(allLeds(red));                               // a pull would fire now
-  CHECK(rig.shell("fire").find("fire: ok") != std::string::npos);   // the shell's stroke
-  CHECK(rig.trigger().strokeActive());
-  CHECK(!rig.app->turret().display().fireReady);
-  CHECK(allLeds(yellow));
-  CHECK(rig.runUntil([&] { return !rig.trigger().strokeActive(); }, kStrokeMs * 2));
-  CHECK_EQ(rig.trigger().shotsTotal(), (uint16_t)1);
-  const uint32_t frameMs = MS_PER_S / LED_REFRESH_HZ;
-  if (kCoolMs > 2 * frameMs + LED_SHOW_MAX_DEFER_MS) {   // the semi cooldown: still yellow
-    rig.runMs(frameMs + LED_SHOW_MAX_DEFER_MS);
-    CHECK(rig.trigger().coolingDown());
-    CHECK(!rig.app->turret().display().fireReady);
-    CHECK(allLeds(yellow));
+  // Latched, then each of disarm, link loss, power off cuts them.
+  rig.press(DS_BTN_DPAD_UP);
+  CHECK(rig.app->flywheel().on());
+  rig.press(DS_BTN_A);
+  CHECK_EQ(rig.state(), (uint8_t)DS_STATE_DISARMED);
+  if (FLYWHEEL_REQUIRES_ARMED) {
+    CHECK(!rig.app->flywheel().on());
+    CHECK(!rig.app->turret().status().flywheelLatch);
   }
-  rig.runMs(std::max<uint32_t>(kCoolMs, LED_FIRE_FLASH_MIN_MS) + 2 * frameMs + kCtrlMs);
-  CHECK(allLeds(red));
+  rig.press(DS_BTN_A);
+  rig.press(DS_BTN_DPAD_UP);
+  CHECK(rig.app->flywheel().on());
+  rig.pad.send = false;                                        // link loss
+  CHECK(rig.runUntil([&] { return rig.state() == DS_STATE_PAIRING; }, LINK_TIMEOUT_MS * 2));
+  if (FAILSAFE_STOP_FLYWHEEL) CHECK(!rig.app->flywheel().on());
+  rig.pad.send = true;
+  CHECK(rig.runUntil([&] { return rig.state() == DS_STATE_DISARMED; }, MS_PER_S));
+  rig.press(DS_BTN_A);
+  rig.press(DS_BTN_DPAD_UP);
+  CHECK(rig.app->flywheel().on());
+  rig.setPower(false);
+  CHECK(rig.runUntil([&] { return rig.state() == DS_STATE_OFF; }, TOGGLE_DEBOUNCE_MS * 2 + kCtrlMs));
+  rig.runMs(FLYWHEEL_BRAKE_MS + kCtrlMs);
+  CHECK(!rig.app->flywheel().on());
+  CHECK(!rig.app->turret().status().flywheelLatch);
+}
+
+// TRIGGER_CLEAR_ENABLED either way, through the whole App: with it, a real shot visits CLEAR
+// between two REST holds and the dart counts after the second; without it, CLEAR is never
+// commanded and the dart counts after the first REST hold.
+TEST(clear_stop_on_and_off_in_a_real_shot) {
+  for (const bool clear : {false, true}) {
+    App::Config cfg = App::defaults();
+    cfg.trigger.clearStop = clear;
+    Rig rig(cfg);
+    CHECK(rig.toArmedSpunUp());
+    bool sawClear = false;
+    int64_t startAt = -1, countAt = -1;
+    const uint8_t ammo0 = rig.trigger().ammo();
+    rig.everyLoop = [&] {
+      // Held at CLEAR (a glide FIRE -> REST may pass its angle on the way).
+      sawClear = sawClear || (rig.trigger().phase() == Trigger::Phase::HOLD_CLEAR &&
+                              servoLogical() == (float)TRIGGER_CLEAR_ANGLE);
+      if (startAt < 0 && rig.trigger().strokeActive()) startAt = rig.ms();
+      if (countAt < 0 && rig.trigger().ammo() != ammo0) countAt = rig.ms();
+    };
+    rig.pad.rt = kPulled;
+    rig.runMs(kSweepMs + TRIGGER_FORWARD_MS + kBackMs + TRIGGER_RETURN_MS + kClearVisitMs + kChamberSweepMs +
+              TRIGGER_CHAMBER_MS + kCtrlMs * 3);
+    rig.everyLoop = nullptr;
+    CHECK_EQ(sawClear, clear);
+    CHECK(startAt >= 0 && countAt >= 0);
+    CHECK(countAt - startAt >= (int64_t)countMsFor(clear) - 1 && countAt - startAt <= (int64_t)countMsFor(clear));
+    CHECK_EQ(rig.trigger().ammo(), (uint8_t)(ammo0 - 1));
+    CHECK_EQ(servoLogical(), (float)TRIGGER_PREFIRE_ANGLE);
+  }
+}
+
+// Power-up and every power-toggle reboot: ammo TRIGGER_AMMO_AT_BOOT with the servo home (REST at
+// 0), whatever was left before the toggle opened.
+TEST(boot_and_power_toggle_reboot_start_with_the_boot_ammo) {
+  Rig rig;
+  const float bootHome = TRIGGER_AMMO_AT_BOOT > 0 ? (float)TRIGGER_PREFIRE_ANGLE : (float)TRIGGER_REST_ANGLE;
+  CHECK(rig.toDisarmed(false));
+  CHECK_EQ(rig.trigger().ammo(), (uint8_t)TRIGGER_AMMO_AT_BOOT);
+  CHECK_EQ(servoLogical(), bootHome);
+  rig.press(DS_BTN_X);
+  CHECK_EQ(rig.trigger().ammo(), (uint8_t)MAG_CAPACITY);
+  CHECK_EQ(servoLogical(), (float)TRIGGER_PREFIRE_ANGLE);
+  rig.press(DS_BTN_X);                                    // X again: unload, servo to REST
+  CHECK_EQ(rig.trigger().ammo(), (uint8_t)0);
+  CHECK_EQ(servoLogical(), (float)TRIGGER_REST_ANGLE);
+  rig.press(DS_BTN_X);                                    // and again: loaded
+  CHECK_EQ(rig.trigger().ammo(), (uint8_t)MAG_CAPACITY);
+  CHECK_EQ(servoLogical(), (float)TRIGGER_PREFIRE_ANGLE);
+  rig.setPower(false);
+  CHECK(rig.runUntil([&] { return rig.state() == DS_STATE_OFF; }, TOGGLE_DEBOUNCE_MS * 2 + kCtrlMs));
+  CHECK_EQ(rig.trigger().ammo(), (uint8_t)TRIGGER_AMMO_AT_BOOT);
+  CHECK_EQ(servoLogical(), bootHome);
+  rig.setPower(true);
+  CHECK(rig.toDisarmed(false));
+  CHECK_EQ(rig.trigger().ammo(), (uint8_t)TRIGGER_AMMO_AT_BOOT);
+  CHECK_EQ(servoLogical(), bootHome);
+  rig.runMs(LCD_REFRESH_MS * 4);
+  CHECK_EQ(rig.lcd(0), padRow(LCD_TXT_DISARMED, ammoText(TRIGGER_AMMO_AT_BOOT)));
 }
 
 // 13. Stopping the relay -> within LINK_TIMEOUT_MS motion stops, flywheels stop, a stroke is
@@ -1289,7 +1295,7 @@ TEST(accept_13_link_loss_stops_everything_within_link_timeout_and_reconnects_dis
   CHECK(rig.us() - lastPacket <= (uint64_t)LINK_TIMEOUT_MS * US_PER_MS + kStepUs);
   CHECK(!rig.trigger().strokeActive());                 // aborted ...
   if (LINK_TIMEOUT_MS + kCtrlMs < kSweepMs) CHECK_EQ(endedIn, Trigger::Phase::SWEEP_OUT);   // ... mid sweep ...
-  CHECK_EQ(servoLogical(), (float)TRIGGER_REST_ANGLE);   // ... at rest now ...
+  CHECK_EQ(servoLogical(), (float)TRIGGER_PREFIRE_ANGLE);   // ... at rest now ...
   CHECK_EQ(rig.trigger().ammo(), ammo);                 // ... and not counted
   if (FAILSAFE_STOP_FLYWHEEL) CHECK_EQ(hal_host::pwmDuty(PIN_FLY_ENA), (uint8_t)0);
   const float v = std::fabs(rig.motion().velocityDeg(AXIS_PAN));
@@ -1455,7 +1461,7 @@ TEST(stall_mid_stroke_aborts_without_a_decrement) {
   hal_host::setAnalog(PIN_STALL_SENSE, kA2Baseline);
   CHECK(!rig.trigger().strokeActive());
   CHECK_EQ(endedIn, Trigger::Phase::HOLD_FIRE);
-  CHECK_EQ(servoLogical(), (float)TRIGGER_REST_ANGLE);
+  CHECK_EQ(servoLogical(), (float)TRIGGER_PREFIRE_ANGLE);
   CHECK_EQ(hal_host::pwmDuty(PIN_FLY_ENA), (uint8_t)0);
   rig.runMs(kStrokeMs);
   CHECK_EQ(rig.trigger().ammo(), ammo);
@@ -1636,7 +1642,7 @@ TEST(cal_stall_sense_without_a_stall_faults_until_power_cycled) {
   CHECK(rig.toDisarmed());
   rig.everyLoop = nullptr;
   CHECK(rig.motion().calibrated());
-  CHECK_EQ(hal::stepPosition(AXIS_TILT), 0);
+  CHECK_EQ(hal::stepPosition(AXIS_TILT), Motion::degToSteps(AXIS_TILT, TILT_BOOT_RAISE_DEG));
   CHECK(rig.countLines("calibration: stall at the bottom stop") == 1u);
 }
 
@@ -1742,27 +1748,30 @@ TEST(boot_warnings_name_a_missing_lcd_and_cut_texts) {
   CHECK_EQ(app->turret().state(), (uint8_t)DS_STATE_CALIBRATING);
 }
 
-// Power off mid-stroke, here in the sweep back: rest now, no decrement; the stroke's rumble is
-// stopped (rumbleMs 0).
+// Power off mid-stroke, here in the sweep back: aborted with no shot counted, and (a new boot for
+// the magazine) ammo TRIGGER_AMMO_AT_BOOT with the servo home, REST at ammo 0; the stroke's rumble
+// is stopped (rumbleMs 0).
 TEST(power_off_mid_stroke_aborts_without_a_decrement) {
   Rig rig;
   CHECK(rig.toArmedSpunUp());
   const Trigger::Phase inPhase = kSweepMs ? Trigger::Phase::SWEEP_BACK : Trigger::Phase::HOLD_REST;
   rig.pad.rt = kPulled;
   CHECK(rig.runUntil([&] { return rig.trigger().phase() == inPhase; }, kStrokeMs));
-  const uint8_t ammo = rig.trigger().ammo();
+  const uint16_t shots = rig.trigger().shotsTotal();
+  const float bootHome = TRIGGER_AMMO_AT_BOOT > 0 ? (float)TRIGGER_PREFIRE_ANGLE : (float)TRIGGER_REST_ANGLE;
   Trigger::Phase endedIn = Trigger::Phase::IDLE;
   rig.everyLoop = watchStrokeEnd(rig, endedIn);
   rig.setPower(false);
   CHECK(rig.runUntil([&] { return rig.state() == DS_STATE_OFF; }, TOGGLE_DEBOUNCE_MS * 2 + kCtrlMs));
-  CHECK_EQ(servoLogical(), (float)TRIGGER_REST_ANGLE);   // at once
+  CHECK_EQ(servoLogical(), bootHome);   // at once
   rig.everyLoop();   // once more: runUntil stops right after the loop that aborted it
   rig.everyLoop = nullptr;
   CHECK_EQ(endedIn, inPhase);
   rig.runMs(STATUS_HEARTBEAT_MS);
   CHECK_EQ(rig.state(), (uint8_t)DS_STATE_OFF);
-  CHECK_EQ(rig.trigger().ammo(), ammo);
-  CHECK_EQ(servoLogical(), (float)TRIGGER_REST_ANGLE);
+  CHECK_EQ(rig.trigger().ammo(), (uint8_t)TRIGGER_AMMO_AT_BOOT);
+  CHECK_EQ(rig.trigger().shotsTotal(), shots);   // the aborted stroke did not count
+  CHECK_EQ(servoLogical(), bootHome);
   CHECK_EQ(rig.lastStatus().rumbleMs, (uint16_t)0);
 }
 
@@ -1785,7 +1794,7 @@ TEST(disarm_mid_stroke_aborts_and_cuts_the_flywheels) {
   CHECK_EQ(rig.trigger().ammo(), ammo);                 // aborted, not completed
   rig.runMs(kStrokeMs);
   CHECK_EQ(rig.trigger().ammo(), ammo);
-  CHECK_EQ(servoLogical(), (float)TRIGGER_REST_ANGLE);
+  CHECK_EQ(servoLogical(), (float)TRIGGER_PREFIRE_ANGLE);
   if (FLYWHEEL_REQUIRES_ARMED) CHECK_EQ(hal_host::pwmDuty(PIN_FLY_ENA), (uint8_t)0);
 }
 
@@ -1826,6 +1835,13 @@ TEST(shell_actions_obey_the_controller_permissions) {
   rig.runMs(kCtrlMs * 3);
   CHECK(rig.shell("arm").find("arm: ok") != std::string::npos);
   CHECK_EQ(rig.state(), (uint8_t)DS_STATE_ARMED);
+  // The boot magazine (TRIGGER_AMMO_AT_BOOT 0) is empty: `fire` refused until `mag` (X) loads it;
+  // `mag` sends the servo to PRE-FIRE and the next shot waits TRIGGER_CHAMBER_MS for it.
+  if (TRIGGER_AMMO_AT_BOOT == 0 && FIRE_LOCKOUT_WHEN_EMPTY)
+    CHECK(rig.shell("fire").find("fire: refused: magazine empty") != std::string::npos);
+  CHECK(rig.shell("mag").find("mag: ok") != std::string::npos);
+  CHECK_EQ(servoLogical(), (float)TRIGGER_PREFIRE_ANGLE);
+  rig.runMs(TRIGGER_CHAMBER_MS);
   // Fire needs the flywheels spun up (FIRE_REQUIRES_FLYWHEEL).
   if (FIRE_REQUIRES_FLYWHEEL) CHECK(rig.shell("fire").find("fire: refused: not ready") != std::string::npos);
   CHECK(rig.shell("fly on").find("fly on: ok") != std::string::npos);
@@ -1876,7 +1892,7 @@ TEST(shell_actions_obey_the_controller_permissions) {
   CHECK(rig.shell("cal").find("cal: ok") != std::string::npos);
   CHECK_EQ(rig.state(), (uint8_t)DS_STATE_CALIBRATING);
   CHECK(rig.toDisarmed());
-  CHECK_EQ(hal::stepPosition(AXIS_TILT), 0);
+  CHECK_EQ(hal::stepPosition(AXIS_TILT), Motion::degToSteps(AXIS_TILT, TILT_BOOT_RAISE_DEG));
 }
 
 TEST(shell_tilt_before_calibration_is_refused) {
@@ -1920,7 +1936,7 @@ TEST(shell_reports_help_status_stats_and_stall) {
   for (const char* c : {"status", "stats", "stall?", "log", "arm", "disarm", "fire", "fly", "mode", "mag",
                         "pan", "tilt", "home", "sethome", "stop", "cal"})
     CHECK(help.find(c) != std::string::npos);
-  const std::string status = rig.shell("status");
+  const std::string status = rig.statusText();
   CHECK(status.find("state=DISARMED") != std::string::npos);
   CHECK(status.find("ammo=" + std::to_string(MAG_CAPACITY) + "/" + std::to_string(MAG_CAPACITY)) != std::string::npos);
   CHECK(status.find("link=USB conn=1") != std::string::npos);
@@ -1961,39 +1977,41 @@ TEST(log_levels_gate_the_stats_line_and_the_stall_trace) {
 }
 
 // =====================================================================================================
-// SERVO ADJUST (TurretState.h): the owner sets the trigger servo's REST and FIRE angles with the pad,
+// SERVO TEACH (TurretState.h): the owner sets the trigger servo's REST, FIRE and PRE-FIRE angles with the pad,
 // the turret records the angle it commands and logs ready-to-paste config.h lines
 // =====================================================================================================
 namespace {
 
 int32_t servoNow() { return (int32_t)std::lround(servoLogical()); }
 bool teaching(const Rig& rig) { return rig.app->turret().servoTeach(); }
-int32_t clampTeach(int32_t deg) { return std::min<int32_t>(std::max<int32_t>(deg, SERVO_ADJUST_MIN_DEG), SERVO_ADJUST_MAX_DEG); }
+int32_t clampTeach(int32_t deg) { return std::min<int32_t>(std::max<int32_t>(deg, SERVO_TEACH_MIN_DEG), SERVO_TEACH_MAX_DEG); }
 bool toTeach(Rig& rig) {
   if (!rig.toDisarmed()) return false;
-  rig.press(DS_BTN_START);
+  rig.press(DS_BTN_Y);
   return teaching(rig) && rig.state() == DS_STATE_DISARMED;
 }
 std::string restLine(int32_t deg) {
-  return "servo adjust: REST recorded -> #define TRIGGER_REST_ANGLE " + std::to_string(deg);
+  return "servo teach: REST recorded -> #define TRIGGER_REST_ANGLE " + std::to_string(deg);
 }
 std::string fireLine(int32_t deg) {
-  return "servo adjust: FIRE recorded -> #define TRIGGER_FIRE_ANGLE " + std::to_string(deg);
+  return "servo teach: FIRE recorded -> #define TRIGGER_FIRE_ANGLE " + std::to_string(deg);
+}
+std::string prefireLine(int32_t deg) {
+  return "servo teach: PRE-FIRE recorded -> #define TRIGGER_PREFIRE_ANGLE " + std::to_string(deg);
 }
 std::string summaryLine(int32_t rest, int32_t fire) {
-  return "servo adjust: done; config.h lines: #define TRIGGER_REST_ANGLE " + std::to_string(rest) +
+  return "servo teach: done; config.h lines: #define TRIGGER_REST_ANGLE " + std::to_string(rest) +
          " / #define TRIGGER_FIRE_ANGLE " + std::to_string(fire);
 }
-std::string restFire(int32_t rest, int32_t fire) {
-  return "REST " + std::to_string(rest) + " FIRE " + std::to_string(fire);
+std::string clearLine(int32_t deg) {
+  return "servo teach: CLEAR recorded -> #define TRIGGER_CLEAR_ANGLE " + std::to_string(deg);
 }
-std::string unchangedLine(int32_t rest, int32_t fire) {
-  return "servo adjust: " + restFire(rest, fire) + " unchanged, nothing written";
+std::string summary2Line(int32_t prefire, int32_t clear = TRIGGER_CLEAR_ANGLE) {
+  return "servo teach: done; config.h lines: #define TRIGGER_PREFIRE_ANGLE " + std::to_string(prefire) +
+         " / #define TRIGGER_CLEAR_ANGLE " + std::to_string(clear);
 }
-// The saved line ends with the time the save took, which the test does not pin down.
-std::string savedPrefix(int32_t rest, int32_t fire) {
-  return "servo adjust: saved " + restFire(rest, fire) + " (survives power off), ";
-}
+// Where the idle servo waits with the magazine loaded (toDisarmed's X): config.h's PRE-FIRE.
+const int32_t kPrefire = TRIGGER_PREFIRE_ANGLE;
 // Lines from `from` whose text after "<uptime> " is exactly `text` (so a cut line never counts).
 size_t countExact(const Rig& rig, const std::string& text, size_t from = 0) {
   size_t n = 0;
@@ -2007,38 +2025,42 @@ size_t countExact(const Rig& rig, const std::string& text, size_t from = 0) {
   }
   return n;
 }
-std::string teachRow1(const std::string& rest, const std::string& fire) {
-  return padRow(std::string(LCD_TXT_SERVO_REST) + rest + " " + LCD_TXT_SERVO_FIRE + fire, "");
+std::string teachRow1(const std::string& rest, const std::string& fire,
+                      const std::string& prefire = LCD_TXT_SERVO_UNSET,
+                      const std::string& clear = LCD_TXT_SERVO_UNSET) {
+  return padRow(std::string(LCD_TXT_SERVO_REST) + rest + LCD_TXT_SERVO_FIRE + fire + LCD_TXT_SERVO_PREFIRE + prefire +
+                    LCD_TXT_SERVO_CLEAR + clear,
+                "");
 }
 bool found(const std::string& haystack, const std::string& needle) { return haystack.find(needle) != std::string::npos; }
 
 }  // namespace
 
-// Menu (DS_BTN_START; owner, 2026-11-03, it was Y) enters adjust mode only from DISARMED (refused
-// and logged in CALIBRATING and ARMED), the state stays DISARMED everywhere it is reported, the
-// servo starts at the configured REST, and Menu again leaves it with the summary.
-TEST(servo_adjust_enters_only_from_disarmed_on_menu) {
+// Y enters teach mode only from DISARMED (refused and logged in CALIBRATING and ARMED), the state
+// stays DISARMED everywhere it is reported, the servo starts at the configured REST, and Y again
+// leaves it with the summary.
+TEST(servo_teach_enters_only_from_disarmed_on_y) {
   Rig rig;
   rig.runMs(MS_PER_S);
   CHECK_EQ(rig.state(), (uint8_t)DS_STATE_CALIBRATING);
   size_t from = rig.lines.size();
-  rig.press(DS_BTN_START);
+  rig.press(DS_BTN_Y);
   rig.flush();
   CHECK(!teaching(rig));
-  CHECK_EQ(rig.countLines("Menu (servo adjust) while calibrating: refused: not in this state", from), (size_t)1);
+  CHECK_EQ(rig.countLines("Y (servo teach) while calibrating: refused: not in this state", from), (size_t)1);
   CHECK(rig.toArmed());
   from = rig.lines.size();
-  rig.press(DS_BTN_START);                                    // never from ARMED
+  rig.press(DS_BTN_Y);                                    // never from ARMED
   rig.flush();
   CHECK(!teaching(rig));
   CHECK_EQ(rig.state(), (uint8_t)DS_STATE_ARMED);
-  CHECK_EQ(rig.countLines("Menu (servo adjust): refused: not in this state", from), (size_t)1);
-  CHECK(found(rig.shell("servo adjust"), "servo adjust: refused: not in this state"));
+  CHECK_EQ(rig.countLines("Y (servo teach): refused: not in this state", from), (size_t)1);
+  CHECK(found(rig.shell("servo teach"), "servo teach: refused: not in this state"));
   CHECK(!teaching(rig));
   rig.press(DS_BTN_A);
   CHECK_EQ(rig.state(), (uint8_t)DS_STATE_DISARMED);
   from = rig.lines.size();
-  rig.press(DS_BTN_START);
+  rig.press(DS_BTN_Y);
   CHECK(teaching(rig));
   CHECK_EQ(rig.state(), (uint8_t)DS_STATE_DISARMED);     // a mode of DISARMED, not a state
   CHECK_EQ(servoNow(), clampTeach(TRIGGER_REST_ANGLE));   // starts at the configured REST
@@ -2046,91 +2068,91 @@ TEST(servo_adjust_enters_only_from_disarmed_on_menu) {
   CHECK_EQ(rig.lastStatus().state, (uint8_t)DS_STATE_DISARMED);
   CHECK(!rig.telemetry.empty() && rig.telemetry.back().state == DS_STATE_DISARMED);
   CHECK_EQ(rig.telemetry.back().servoDeg, (uint8_t)clampTeach(TRIGGER_REST_ANGLE));
-  CHECK_EQ(rig.lcd(0), padRow(LCD_TXT_SERVO_ADJUST, std::to_string(clampTeach(TRIGGER_REST_ANGLE))));
-  CHECK_EQ(rig.lcd(1), teachRow1(std::to_string(TRIGGER_REST_ANGLE), std::to_string(TRIGGER_FIRE_ANGLE)));
-  CHECK(allLeds(scaled(LED_COLOR_SERVO_ADJUST)));
+  CHECK_EQ(rig.lcd(0), padRow(LCD_TXT_SERVO_TEACH, std::to_string(clampTeach(TRIGGER_REST_ANGLE))));
+  CHECK_EQ(rig.lcd(1), teachRow1(LCD_TXT_SERVO_UNSET, LCD_TXT_SERVO_UNSET));
+  CHECK(allLeds(scaled(LED_COLOR_SERVO_TEACH)));
   rig.flush();
-  CHECK_EQ(rig.countLines("servo adjust: on (Menu) at " + std::to_string(clampTeach(TRIGGER_REST_ANGLE)) + " deg", from),
+  CHECK_EQ(rig.countLines("servo teach: on (Y) at " + std::to_string(clampTeach(TRIGGER_REST_ANGLE)) + " deg", from),
            (size_t)1);
-  // Menu again leaves it, with the summary; nothing changed, so nothing is written.
+  // Y again leaves it, with the summary (nothing recorded: config.h's values).
   from = rig.lines.size();
-  rig.press(DS_BTN_START);
+  rig.press(DS_BTN_Y);
   rig.flush();
   CHECK(!teaching(rig));
   CHECK_EQ(countExact(rig, summaryLine(TRIGGER_REST_ANGLE, TRIGGER_FIRE_ANGLE), from), (size_t)1);
-  CHECK_EQ(countExact(rig, unchangedLine(TRIGGER_REST_ANGLE, TRIGGER_FIRE_ANGLE), from), (size_t)1);
-  CHECK_EQ(hal_host::storeSaves(), 0u);
-  CHECK_EQ(servoNow(), (int32_t)TRIGGER_REST_ANGLE);
+  CHECK_EQ(countExact(rig, summary2Line(TRIGGER_PREFIRE_ANGLE), from), (size_t)1);
+  CHECK_EQ(servoNow(), kPrefire);                         // home: the magazine is loaded
   rig.runMs(LCD_REFRESH_MS * 4);
   CHECK_EQ(rig.lcd(0), padRow(LCD_TXT_DISARMED, ammoText(MAG_CAPACITY)));
   CHECK(allLeds(scaled(LED_COLOR_DISARMED)));
 }
 
 // d-pad up / down and RB / LB move by the configured steps, one step per press (holding never
-// repeats), clamped to SERVO_ADJUST_MIN_DEG..MAX; the LCD and the telemetry show the angle.
-TEST(servo_adjust_nudges_by_the_configured_steps_clamp_and_never_repeat) {
+// repeats), clamped to SERVO_TEACH_MIN_DEG..MAX; the LCD and the telemetry show the angle.
+TEST(servo_teach_nudges_by_the_configured_steps_clamp_and_never_repeat) {
   Rig rig;
   CHECK(toTeach(rig));
   const int32_t start = servoNow();
   int32_t want = start;
   rig.press(DS_BTN_DPAD_UP);
-  CHECK_EQ(servoNow(), want = clampTeach(want + SERVO_ADJUST_STEP_SMALL_DEG));
+  CHECK_EQ(servoNow(), want = clampTeach(want + SERVO_TEACH_STEP_SMALL_DEG));
   rig.press(DS_BTN_RB);
-  CHECK_EQ(servoNow(), want = clampTeach(want + SERVO_ADJUST_STEP_LARGE_DEG));
+  CHECK_EQ(servoNow(), want = clampTeach(want + SERVO_TEACH_STEP_LARGE_DEG));
   rig.press(DS_BTN_DPAD_DOWN);
-  CHECK_EQ(servoNow(), want = clampTeach(want - SERVO_ADJUST_STEP_SMALL_DEG));
+  CHECK_EQ(servoNow(), want = clampTeach(want - SERVO_TEACH_STEP_SMALL_DEG));
   rig.press(DS_BTN_LB);
-  CHECK_EQ(servoNow(), want = clampTeach(want - SERVO_ADJUST_STEP_LARGE_DEG));
+  CHECK_EQ(servoNow(), want = clampTeach(want - SERVO_TEACH_STEP_LARGE_DEG));
   // Held for a whole second: still one step.
   rig.pad.buttons = DS_BTN_DPAD_UP;
   rig.runMs(MS_PER_S);
   rig.pad.buttons = 0;
   rig.runMs(BUTTON_DEBOUNCE_MS + kCtrlMs * 2);
-  CHECK_EQ(servoNow(), want = clampTeach(want + SERVO_ADJUST_STEP_SMALL_DEG));
+  CHECK_EQ(servoNow(), want = clampTeach(want + SERVO_TEACH_STEP_SMALL_DEG));
   rig.pad.buttons = DS_BTN_RB;
   rig.runMs(MS_PER_S);
   rig.pad.buttons = 0;
   rig.runMs(BUTTON_DEBOUNCE_MS + kCtrlMs * 2);
-  CHECK_EQ(servoNow(), want = clampTeach(want + SERVO_ADJUST_STEP_LARGE_DEG));
+  CHECK_EQ(servoNow(), want = clampTeach(want + SERVO_TEACH_STEP_LARGE_DEG));
   // The bottom of the range: more presses than it takes, then it stays there.
-  const int32_t downs = (servoNow() - SERVO_ADJUST_MIN_DEG) / SERVO_ADJUST_STEP_LARGE_DEG + 2;
+  const int32_t downs = (servoNow() - SERVO_TEACH_MIN_DEG) / SERVO_TEACH_STEP_LARGE_DEG + 2;
   for (int32_t k = 0; k < downs; k++) rig.press(DS_BTN_LB);
-  CHECK_EQ(servoNow(), (int32_t)SERVO_ADJUST_MIN_DEG);
+  CHECK_EQ(servoNow(), (int32_t)SERVO_TEACH_MIN_DEG);
   rig.press(DS_BTN_DPAD_DOWN);
-  CHECK_EQ(servoNow(), (int32_t)SERVO_ADJUST_MIN_DEG);
+  CHECK_EQ(servoNow(), (int32_t)SERVO_TEACH_MIN_DEG);
   rig.flush();
-  CHECK(found(rig.lastLine("servo adjust: "), "(limit)"));
+  CHECK(found(rig.lastLine("servo teach: "), "(limit)"));
   // The top (the shell's absolute angle gets near it), and past it.
-  CHECK(found(rig.shell("servo " + std::to_string(SERVO_ADJUST_MAX_DEG - SERVO_ADJUST_STEP_SMALL_DEG)), ": ok"));
+  CHECK(found(rig.shell("servo " + std::to_string(SERVO_TEACH_MAX_DEG - SERVO_TEACH_STEP_SMALL_DEG)), ": ok"));
   rig.press(DS_BTN_RB);
-  CHECK_EQ(servoNow(), (int32_t)SERVO_ADJUST_MAX_DEG);
+  CHECK_EQ(servoNow(), (int32_t)SERVO_TEACH_MAX_DEG);
   rig.press(DS_BTN_DPAD_UP);
-  CHECK_EQ(servoNow(), (int32_t)SERVO_ADJUST_MAX_DEG);
-  CHECK(found(rig.shell("servo " + std::to_string(SERVO_ADJUST_MAX_DEG + 1)), "refused: outside the limits"));
-  CHECK(found(rig.shell("servo " + std::to_string(SERVO_ADJUST_MIN_DEG - 1)), "refused: outside the limits"));
-  CHECK_EQ(servoNow(), (int32_t)SERVO_ADJUST_MAX_DEG);
+  CHECK_EQ(servoNow(), (int32_t)SERVO_TEACH_MAX_DEG);
+  CHECK(found(rig.shell("servo " + std::to_string(SERVO_TEACH_MAX_DEG + 1)), "refused: outside the limits"));
+  CHECK(found(rig.shell("servo " + std::to_string(SERVO_TEACH_MIN_DEG - 1)), "refused: outside the limits"));
+  CHECK_EQ(servoNow(), (int32_t)SERVO_TEACH_MAX_DEG);
   // The LCD and the telemetry follow the commanded angle.
   rig.runMs(LCD_REFRESH_MS * 4);
-  CHECK_EQ(rig.lcd(0), padRow(LCD_TXT_SERVO_ADJUST, std::to_string(SERVO_ADJUST_MAX_DEG)));
-  CHECK_EQ(rig.telemetry.back().servoDeg, (uint8_t)SERVO_ADJUST_MAX_DEG);
+  CHECK_EQ(rig.lcd(0), padRow(LCD_TXT_SERVO_TEACH, std::to_string(SERVO_TEACH_MAX_DEG)));
+  CHECK_EQ(rig.telemetry.back().servoDeg, (uint8_t)SERVO_TEACH_MAX_DEG);
   CHECK(teaching(rig));
 }
 
-// A records the commanded angle as REST, B as FIRE, each with its ready-to-paste line (printed
-// whatever the log level); the LCD and `status` show them; leaving prints the summary, whole.
-TEST(servo_adjust_records_rest_and_fire_and_prints_the_paste_lines) {
+// A records the commanded angle as REST, B as FIRE, d-pad right as PRE-FIRE, each with its
+// ready-to-paste line (printed whatever the log level); the LCD and `status` show them; leaving
+// prints the summary, whole, and the servo goes home to the recorded PRE-FIRE.
+TEST(servo_teach_records_rest_and_fire_and_prints_the_paste_lines) {
   Rig rig;
   CHECK(toTeach(rig));
   for (int k = 0; k < 3; k++) rig.press(DS_BTN_DPAD_UP);
   const int32_t rest = servoNow();
-  CHECK_EQ(rest, clampTeach(clampTeach(TRIGGER_REST_ANGLE) + 3 * SERVO_ADJUST_STEP_SMALL_DEG));
+  CHECK_EQ(rest, clampTeach(clampTeach(TRIGGER_REST_ANGLE) + 3 * SERVO_TEACH_STEP_SMALL_DEG));
   size_t from = rig.lines.size();
   rig.press(DS_BTN_A);
   rig.flush();
   CHECK_EQ(countExact(rig, restLine(rest), from), (size_t)1);
   CHECK_EQ(rig.state(), (uint8_t)DS_STATE_DISARMED);     // A recorded; it did not arm
   rig.runMs(LCD_REFRESH_MS * 4);
-  CHECK_EQ(rig.lcd(1), teachRow1(std::to_string(rest), std::to_string(TRIGGER_FIRE_ANGLE)));
+  CHECK_EQ(rig.lcd(1), teachRow1(std::to_string(rest), LCD_TXT_SERVO_UNSET));
   for (int k = 0; k < 4; k++) rig.press(DS_BTN_RB);
   const int32_t fire = servoNow();
   from = rig.lines.size();
@@ -2142,8 +2164,34 @@ TEST(servo_adjust_records_rest_and_fire_and_prints_the_paste_lines) {
   CHECK_EQ(rig.trigger().fireDeg(), (float)fire);
   rig.runMs(LCD_REFRESH_MS * 4);
   CHECK_EQ(rig.lcd(1), teachRow1(std::to_string(rest), std::to_string(fire)));
-  CHECK(found(rig.shell("status"), "status servo=" + std::to_string(fire) + " adjust=1 rest=" + std::to_string(rest) +
-                                       " fire=" + std::to_string(fire) + " (not saved)"));
+  rig.press(DS_BTN_LB);                                  // 5 degrees down: off REST and FIRE
+  const int32_t prefire = servoNow();
+  from = rig.lines.size();
+  rig.press(DS_BTN_DPAD_RIGHT);
+  rig.flush();
+  CHECK_EQ(countExact(rig, prefireLine(prefire), from), (size_t)1);
+  CHECK_EQ(rig.trigger().prefireDeg(), (float)prefire);
+  CHECK_EQ(rig.trigger().restDeg(), (float)rest);
+  CHECK_EQ(rig.trigger().fireDeg(), (float)fire);
+  rig.runMs(LCD_REFRESH_MS * 4);
+  CHECK_EQ(rig.lcd(1), teachRow1(std::to_string(rest), std::to_string(fire), std::to_string(prefire)));
+  // View records CLEAR.
+  rig.press(DS_BTN_LB);
+  const int32_t clear = servoNow();
+  from = rig.lines.size();
+  rig.press(DS_BTN_BACK);
+  rig.flush();
+  CHECK_EQ(countExact(rig, clearLine(clear), from), (size_t)1);
+  CHECK_EQ(rig.trigger().clearDeg(), (float)clear);
+  CHECK_EQ(rig.trigger().prefireDeg(), (float)prefire);
+  rig.runMs(LCD_REFRESH_MS * 4);
+  CHECK_EQ(rig.lcd(1), teachRow1(std::to_string(rest), std::to_string(fire), std::to_string(prefire),
+                                 std::to_string(clear)));
+  CHECK(rig.lcd(1).size() == (size_t)LCD_COLS);
+  CHECK(found(rig.statusText(), "status servo=" + std::to_string(clear) + " teach=1 rest=" + std::to_string(rest) +
+                                    " (recorded) fire=" + std::to_string(fire) + " (recorded) prefire=" +
+                                    std::to_string(prefire) + " (recorded) clear=" + std::to_string(clear) +
+                                    " (recorded)"));
   // With logging off the paste lines still come; the nudge line (LOG_STATE) does not.
   CHECK(found(rig.shell("log 0"), "log: level 0"));
   from = rig.lines.size();
@@ -2151,50 +2199,43 @@ TEST(servo_adjust_records_rest_and_fire_and_prints_the_paste_lines) {
   rig.press(DS_BTN_A);
   rig.flush();
   CHECK_EQ(countExact(rig, restLine(rest), from), (size_t)1);
-  CHECK_EQ(rig.countLines("servo adjust: " + std::to_string(rest) + " deg", from), (size_t)0);
+  CHECK_EQ(rig.countLines("servo teach: " + std::to_string(rest) + " deg", from), (size_t)0);
   from = rig.lines.size();
-  rig.press(DS_BTN_START);
+  rig.press(DS_BTN_Y);
   rig.flush();
   CHECK_EQ(countExact(rig, summaryLine(rest, fire), from), (size_t)1);   // whole, on one line
-  CHECK_EQ(rig.countLines(savedPrefix(rest, fire), from), (size_t)1);    // and saved, log 0 or not
+  CHECK_EQ(countExact(rig, summary2Line(prefire, clear), from), (size_t)1);
   CHECK(found(rig.shell("log 2"), "log: level 2"));
   for (const std::string& l : rig.lines) CHECK(l.size() <= (size_t)DEBUG_LOG_LINE_MAX);
-  // Adjust mode is over; the recorded values stay in force, now saved.
+  // Teach mode is over; the recorded values stay in force (until power off).
   CHECK(!teaching(rig));
-  CHECK(found(rig.shell("status"), "adjust=0 rest=" + std::to_string(rest) + " fire=" + std::to_string(fire) + " (saved)"));
-  CHECK_EQ(servoNow(), rest);
+  CHECK_EQ(servoNow(), prefire);
+  CHECK_EQ(rig.trigger().prefireDeg(), (float)prefire);
+  CHECK_EQ(rig.trigger().clearDeg(), (float)clear);
   CHECK_EQ(rig.trigger().restDeg(), (float)rest);
   CHECK_EQ(rig.trigger().fireDeg(), (float)fire);
 }
 
 // Teach nudges toward the side of the configured REST that has room: config.h's REST may sit at
 // either end of the teach range (the owner's racked REST is 180 with TRIGGER_SERVO_REVERSED).
-const bool kRoomUp = (SERVO_ADJUST_MAX_DEG - TRIGGER_REST_ANGLE) >= (TRIGGER_REST_ANGLE - SERVO_ADJUST_MIN_DEG);
+const bool kRoomUp = (SERVO_TEACH_MAX_DEG - TRIGGER_REST_ANGLE) >= (TRIGGER_REST_ANGLE - SERVO_TEACH_MIN_DEG);
 const uint16_t kAwaySmall = kRoomUp ? DS_BTN_DPAD_UP : DS_BTN_DPAD_DOWN;
 const uint16_t kAwayLarge = kRoomUp ? DS_BTN_RB : DS_BTN_LB;
 const uint16_t kBackSmall = kRoomUp ? DS_BTN_DPAD_DOWN : DS_BTN_DPAD_UP;
 
-// X: one test stroke -> FIRE -> REST with the angles in force (config.h's at once, the recorded
-// ones after A / B), the same sweeps (from wherever the servo is) and holds as a real stroke, LEDs
-// cyan throughout (SERVO ADJUST wins; the owner dropped the FIRING red on 2026-11-03), no ammo
-// change, no shot counted, no rumble; while it runs, records, View and nudges are refused.
-TEST(servo_adjust_test_stroke_uses_the_recorded_angles_and_timing_and_costs_nothing) {
+// X: one test stroke, the whole shot sequence with the angles in force: from wherever the servo is
+// to PRE-FIRE (held TRIGGER_CHAMBER_MS), -> FIRE, -> REST, the pause, -> PRE-FIRE, the same sweeps
+// and holds as a real shot, red LEDs, no ammo change, no shot counted, no rumble; refused before
+// FIRE is recorded; while it runs, records and nudges are refused.
+TEST(servo_teach_test_stroke_uses_the_recorded_angles_and_timing_and_costs_nothing) {
   Rig rig;
   CHECK(toTeach(rig));
   size_t from = rig.lines.size();
-  rig.pad.buttons = DS_BTN_X;                     // nothing recorded: config.h's angles in force
-  CHECK(rig.runUntil([&] { return rig.trigger().testStrokeActive(); }, kCtrlMs * 3));
-  rig.pad.buttons = 0;
-  bool reachedFire = false;
-  rig.everyLoop = [&] { reachedFire = reachedFire || servoNow() == (int32_t)TRIGGER_FIRE_ANGLE; };
-  CHECK(rig.runUntil([&] { return !rig.trigger().strokeActive(); }, kStrokeMs * 2));
-  rig.everyLoop = nullptr;
-  CHECK(reachedFire);
-  CHECK_EQ(servoNow(), (int32_t)TRIGGER_REST_ANGLE);
-  rig.runMs(BUTTON_DEBOUNCE_MS + kCtrlMs * 2);
+  rig.press(DS_BTN_X);
   rig.flush();
-  CHECK_EQ(rig.countLines("servo adjust: test stroke REST " + std::to_string(TRIGGER_REST_ANGLE) + " -> FIRE " +
-                              std::to_string(TRIGGER_FIRE_ANGLE), from), (size_t)1);
+  CHECK_EQ(rig.countLines("X (test stroke): refused: FIRE not recorded", from), (size_t)1);
+  CHECK(!rig.trigger().strokeActive());
+  CHECK(found(rig.shell("servo stroke"), "servo stroke: refused: FIRE not recorded"));
   rig.press(kAwaySmall);
   rig.press(DS_BTN_A);
   const int32_t rest = servoNow();
@@ -2209,25 +2250,35 @@ TEST(servo_adjust_test_stroke_uses_the_recorded_angles_and_timing_and_costs_noth
   const uint8_t rumbleSeq = rig.lastStatus().rumbleSeq;
   const size_t statuses0 = rig.statuses.size();
   // Each phase's first ms, and every commanded angle, as the loops see them.
-  const float startDeg = rig.trigger().servoDeg();   // the sweep starts at the nudged angle
-  int64_t startAt = -1, holdFireAt = -1, sweepBackAt = -1, holdRestAt = -1, doneAt = -1;
-  bool fireExact = true, restExact = true, monotonic = true, inside = true, cyan = false, notCyanMidStroke = false;
+  const float startDeg = rig.trigger().servoDeg();   // the lead-in starts at the nudged angle
+  const float prefire = (float)kPrefire;
+  CHECK(startDeg != prefire);
+  const float clear = (float)TRIGGER_CLEAR_ANGLE;
+  int64_t leadAt = -1, startAt = -1, holdFireAt = -1, sweepBackAt = -1, holdRestAt = -1, sweepClearAt = -1,
+          holdClearAt = -1, holdRackAt = -1, doneAt = -1;
+  bool fireExact = true, restExact = true, monotonic = true, inside = true, red = false, notRedMidStroke = false;
   float last = startDeg;
   Trigger::Phase was = Trigger::Phase::IDLE;
-  const float lo = std::min({startDeg, (float)rest, (float)fire}), hi = std::max({startDeg, (float)rest, (float)fire});
+  const float lo = std::min({startDeg, (float)rest, (float)fire, prefire, TRIGGER_CLEAR_ENABLED ? clear : prefire});
+  const float hi = std::max({startDeg, (float)rest, (float)fire, prefire, TRIGGER_CLEAR_ENABLED ? clear : prefire});
   rig.everyLoop = [&] {
     const Trigger::Phase p = rig.trigger().phase();
     const float d = rig.trigger().servoDeg();
     const int64_t now = rig.ms();
     if (p != was) {
+      if (was == Trigger::Phase::IDLE && leadAt < 0) leadAt = now;
       if (p == kFirstPhase && startAt < 0) startAt = now;
       if (p == Trigger::Phase::HOLD_FIRE && holdFireAt < 0) holdFireAt = now;
       if (p == Trigger::Phase::SWEEP_BACK && sweepBackAt < 0) sweepBackAt = now;
       if (p == Trigger::Phase::HOLD_REST && holdRestAt < 0) holdRestAt = now;
+      if (p == Trigger::Phase::SWEEP_CLEAR && sweepClearAt < 0) sweepClearAt = now;
+      if (p == Trigger::Phase::HOLD_CLEAR && holdClearAt < 0) holdClearAt = now;
+      if (p == Trigger::Phase::HOLD_RACK && holdRackAt < 0) holdRackAt = now;
       if (p == Trigger::Phase::IDLE && startAt >= 0 && doneAt < 0) doneAt = now;
     }
     if (p == Trigger::Phase::HOLD_FIRE) fireExact = fireExact && d == (float)fire;
-    if (p == Trigger::Phase::HOLD_REST) restExact = restExact && d == (float)rest;
+    if (p == Trigger::Phase::HOLD_REST || p == Trigger::Phase::HOLD_RACK) restExact = restExact && d == (float)rest;
+    if (p == Trigger::Phase::HOLD_CLEAR) restExact = restExact && d == clear;
     if (p == Trigger::Phase::SWEEP_OUT) monotonic = monotonic && std::fabs(d - (float)fire) <= std::fabs(last - (float)fire);
     if (p == Trigger::Phase::SWEEP_BACK) monotonic = monotonic && std::fabs(d - (float)rest) <= std::fabs(last - (float)rest);
     if (startAt >= 0) inside = inside && d >= lo && d <= hi;
@@ -2236,16 +2287,16 @@ TEST(servo_adjust_test_stroke_uses_the_recorded_angles_and_timing_and_costs_noth
   };
   rig.onShow = [&] {
     if (!rig.trigger().testStrokeActive()) return;
-    if (allLeds(scaled(LED_COLOR_SERVO_ADJUST))) cyan = true;
-    else notCyanMidStroke = true;
+    if (allLeds(scaled(LED_COLOR_FIRING))) red = true;
+    else notRedMidStroke = true;
   };
   rig.pad.buttons = DS_BTN_X;
   CHECK(rig.runUntil([&] { return rig.trigger().testStrokeActive(); }, kCtrlMs * 3));
   rig.pad.buttons = 0;
   rig.runMs(BUTTON_DEBOUNCE_MS + kCtrlMs * 2);
-  // Mid stroke: A, B, View, a nudge and X again are refused (not ready).
+  // Mid stroke: A, B, a nudge and X again are refused (not ready).
   from = rig.lines.size();
-  rig.pad.buttons = DS_BTN_A | DS_BTN_B | DS_BTN_BACK | kAwaySmall | DS_BTN_X;
+  rig.pad.buttons = DS_BTN_A | DS_BTN_B | kAwaySmall | DS_BTN_X;
   rig.runMs(kCtrlMs * 3);
   rig.pad.buttons = 0;
   CHECK(rig.runUntil([&] { return doneAt >= 0; }, kStrokeMs * 2));
@@ -2253,21 +2304,30 @@ TEST(servo_adjust_test_stroke_uses_the_recorded_angles_and_timing_and_costs_noth
   rig.onShow = nullptr;
   rig.flush();
   for (const char* what : {"A (record REST): refused: not ready", "B (record FIRE): refused: not ready",
-                           "View (config.h angles): refused: not ready",
                            kRoomUp ? "d-pad up (servo +): refused: not ready" : "d-pad down (servo -): refused: not ready",
                            "X (test stroke): refused: not ready"})
     CHECK_EQ(rig.countLines(what, from), (size_t)1);
-  CHECK(startAt >= 0 && holdFireAt >= 0 && sweepBackAt >= 0 && holdRestAt >= 0 && doneAt >= 0);
+  CHECK(leadAt >= 0 && startAt >= 0 && holdFireAt >= 0 && sweepBackAt >= 0 && holdRestAt >= 0 && doneAt >= 0);
+  CHECK_EQ(sweepClearAt >= 0 && holdClearAt >= 0 && holdRackAt >= 0, TRIGGER_CLEAR_ENABLED);   // the CLEAR visit
   // The X press lands anywhere inside a ms, the later phases on its first loop: the first gap
-  // may read one ms short, the others are exact.
-  const int64_t out = sweepMsFor(std::fabs((float)fire - startDeg));
-  CHECK(holdFireAt - startAt >= out - 1 && holdFireAt - startAt <= out);
+  // (the lead-in to PRE-FIRE) may read one ms short, the others are exact.
+  const int64_t lead = sweepMsFor(std::fabs(prefire - startDeg)) + TRIGGER_CHAMBER_MS;
+  CHECK(startAt - leadAt >= lead - 1 && startAt - leadAt <= lead);
+  CHECK_EQ(holdFireAt - startAt, (int64_t)sweepMsFor(std::fabs((float)fire - prefire)));
   CHECK_EQ(sweepBackAt - holdFireAt, (int64_t)TRIGGER_FORWARD_MS);
   CHECK_EQ(holdRestAt - sweepBackAt, (int64_t)sweepMsFor(std::fabs((float)rest - (float)fire)));
-  CHECK_EQ(doneAt - holdRestAt, (int64_t)TRIGGER_RETURN_MS);
+  const int64_t chamber = (int64_t)(sweepMsFor(std::fabs(prefire - (float)rest)) + TRIGGER_CHAMBER_MS);
+  if (TRIGGER_CLEAR_ENABLED) {
+    CHECK_EQ(sweepClearAt - holdRestAt, (int64_t)TRIGGER_RETURN_MS);
+    CHECK_EQ(holdClearAt - sweepClearAt, (int64_t)sweepMsFor(std::fabs(clear - (float)rest)));
+    CHECK_EQ(holdRackAt - holdClearAt, (int64_t)(TRIGGER_CLEAR_HOLD_MS + sweepMsFor(std::fabs(clear - (float)rest))));
+    CHECK_EQ(doneAt - holdRackAt, (int64_t)TRIGGER_RETURN_MS + chamber);
+  } else {
+    CHECK_EQ(doneAt - holdRestAt, (int64_t)TRIGGER_RETURN_MS + chamber);
+  }
   CHECK(fireExact && restExact);                        // landed exactly, held
   CHECK(monotonic && inside);                           // glided, never past an end
-  CHECK(cyan && !notCyanMidStroke);                     // cyan for the whole test stroke
+  CHECK(red && !notRedMidStroke);                       // LEDs red as a normal stroke
   CHECK_EQ(rig.trigger().ammo(), ammo);                 // no dart counted
   CHECK_EQ(rig.trigger().shotsTotal(), shots);
   CHECK_EQ(rig.trigger().restDeg(), (float)rest);       // the records were not touched mid stroke
@@ -2275,17 +2335,18 @@ TEST(servo_adjust_test_stroke_uses_the_recorded_angles_and_timing_and_costs_noth
   rig.runMs(STATUS_HEARTBEAT_MS * 2);
   CHECK(rig.statuses.size() > statuses0);
   for (size_t k = statuses0; k < rig.statuses.size(); k++) CHECK_EQ(rig.statuses[k].rumbleSeq, rumbleSeq);   // no rumble
-  CHECK_EQ(servoNow(), rest);                           // ends at REST, still in adjust mode
+  CHECK_EQ(servoNow(), kPrefire);                       // ends at PRE-FIRE, still in teach mode
   CHECK(teaching(rig));
   rig.runMs(LCD_REFRESH_MS * 4);
-  CHECK(allLeds(scaled(LED_COLOR_SERVO_ADJUST)));
-  CHECK_EQ(rig.lcd(0), padRow(LCD_TXT_SERVO_ADJUST, std::to_string(rest)));
+  CHECK(allLeds(scaled(LED_COLOR_SERVO_TEACH)));
+  CHECK_EQ(rig.lcd(0), padRow(LCD_TXT_SERVO_TEACH, std::to_string(kPrefire)));
 }
 
-// KEY SAFETY TEST: the flywheels never turn in adjust mode, also when DISARMED may spin them
-// (FLYWHEEL_REQUIRES_ARMED false), with LB held into and through it, LB pressed (toggle mode)
-// or the shell's `fly on`; nothing fires either.
-TEST(servo_adjust_never_spins_the_flywheels_whatever_lb_or_the_flags_say) {
+// KEY SAFETY TEST: in teach mode only d-pad left turns the flywheels: never LB held into and
+// through it, LB pressed (toggle mode) or the shell's `fly on`, also when DISARMED may spin them
+// (FLYWHEEL_REQUIRES_ARMED false); nothing fires either. D-pad left then toggles them on (the
+// normal ramp, whatever FLYWHEEL_REQUIRES_ARMED says) and off, and leaving teach mode cuts them.
+TEST(servo_teach_flywheels_only_on_d_pad_left_and_cut_when_it_ends) {
   struct Case {
     bool requiresArmed;
     bool holdMode;
@@ -2312,7 +2373,7 @@ TEST(servo_adjust_never_spins_the_flywheels_whatever_lb_or_the_flags_say) {
       spun = spun || rig.app->flywheel().on() || rig.app->flywheel().duty() > 0 ||
              (hal_host::pwmDuty(PIN_FLY_ENA) > 0 && !rig.app->flywheel().braking());
     };
-    rig.press(DS_BTN_START);                 // into adjust mode (hold mode: LB still held)
+    rig.press(DS_BTN_Y);                     // into teach mode (hold mode: LB still held)
     CHECK(teaching(rig));
     rig.runMs(FLYWHEEL_SPINUP_MS + FLYWHEEL_RAMP_MS);
     rig.pad.buttons = 0;
@@ -2322,7 +2383,7 @@ TEST(servo_adjust_never_spins_the_flywheels_whatever_lb_or_the_flags_say) {
     rig.runMs(FLYWHEEL_RAMP_MS);
     rig.pad.buttons = 0;
     rig.runMs(BUTTON_DEBOUNCE_MS + kCtrlMs * 2);
-    CHECK(found(rig.shell("fly on"), "fly on: refused: in servo adjust"));
+    CHECK(found(rig.shell("fly on"), "fly on: refused: in servo teach"));
     rig.pad.rt = kPulled;
     rig.runMs(kStrokeMs * 2);
     CHECK(found(rig.shell("fire"), "fire: refused"));
@@ -2335,13 +2396,49 @@ TEST(servo_adjust_never_spins_the_flywheels_whatever_lb_or_the_flags_say) {
     CHECK_EQ(hal_host::pwmDuty(PIN_FLY_ENA), (uint8_t)0);
     CHECK_EQ(rig.trigger().shotsTotal(), (uint16_t)0);
     CHECK(!rig.app->turret().status().flywheelAllowed);
+    // D-pad left: on, with the normal soft-start ramp; again: off.
+    size_t from = rig.lines.size();
+    rig.pad.buttons = DS_BTN_DPAD_LEFT;
+    CHECK(rig.runUntil([&] { return rig.app->flywheel().on(); }, kCtrlMs * 3));
+    CHECK(rig.app->flywheel().duty() < FLYWHEEL_DUTY_255);   // ramping, not a step
+    rig.pad.buttons = 0;
+    rig.runMs(FLYWHEEL_RAMP_MS + kCtrlMs);
+    CHECK(rig.app->flywheel().on());
+    CHECK_EQ(rig.app->flywheel().duty(), (uint8_t)FLYWHEEL_DUTY_255);
+    CHECK(rig.app->turret().status().teachFlywheel);
+    rig.flush();
+    CHECK_EQ(rig.countLines("servo teach: flywheels on (d-pad left)", from), (size_t)1);
+    CHECK(teaching(rig));
+    rig.press(DS_BTN_LB);                                    // LB in teach mode: a servo nudge only
+    CHECK(rig.app->flywheel().on());
+    rig.press(DS_BTN_DPAD_LEFT);
+    CHECK(!rig.app->flywheel().on());
+    CHECK(!rig.app->turret().status().teachFlywheel);
+    // On again, then Y leaves teach mode: cut.
+    rig.press(DS_BTN_DPAD_LEFT);
+    CHECK(rig.app->flywheel().on());
+    rig.press(DS_BTN_Y);
+    CHECK(!teaching(rig));
+    CHECK(!rig.app->flywheel().on());
+    CHECK(!rig.app->turret().status().teachFlywheel);
+    // The shell's `fly off` turns them off in teach mode too.
+    rig.press(DS_BTN_Y);
+    CHECK(teaching(rig));
+    rig.press(DS_BTN_DPAD_LEFT);
+    CHECK(rig.app->flywheel().on());
+    CHECK(found(rig.shell("fly off"), "fly off: ok"));
+    rig.runMs(kCtrlMs * 2);
+    CHECK(!rig.app->flywheel().on());
+    from = rig.lines.size();
+    rig.press(DS_BTN_Y);
+    CHECK(!teaching(rig));
   }
 }
 
-// KEY SAFETY TEST: in adjust mode A does not arm, B does not toggle the fire mode, X does not
+// KEY SAFETY TEST: in teach mode A does not arm, B does not toggle the fire mode, X does not
 // reset the magazine, d-pad left / down do not set / go home, RT does not fire, and the shell
 // refuses the same actions; the stick (and shell pan / tilt) still aim.
-TEST(servo_adjust_a_b_x_rt_and_the_d_pad_do_not_do_their_normal_actions) {
+TEST(servo_teach_a_b_x_rt_and_the_d_pad_do_not_do_their_normal_actions) {
   Rig rig;
   CHECK(rig.toArmedSpunUp());
   rig.pad.rt = kPulled;
@@ -2363,7 +2460,7 @@ TEST(servo_adjust_a_b_x_rt_and_the_d_pad_do_not_do_their_normal_actions) {
   rig.runMs(MS_PER_S / 2);
   const float panHere = rig.motion().positionDeg(AXIS_PAN);
   CHECK(std::fabs(panHere - homePan) > 5.0f);
-  rig.press(DS_BTN_START);
+  rig.press(DS_BTN_Y);
   CHECK(teaching(rig));
   rig.flush();
   const size_t armings = rig.countLines("state ARMED");
@@ -2374,8 +2471,11 @@ TEST(servo_adjust_a_b_x_rt_and_the_d_pad_do_not_do_their_normal_actions) {
   rig.press(DS_BTN_X);                                            // FIRE is recorded: a test stroke
   rig.runMs(kStrokeMs * 2);
   CHECK_EQ(rig.trigger().ammo(), (uint8_t)(MAG_CAPACITY - 1));
-  rig.press(DS_BTN_DPAD_LEFT);
+  rig.press(DS_BTN_DPAD_LEFT);                                    // the teach flywheel toggle, not set home
   CHECK_NEAR(rig.motion().homeDeg(AXIS_PAN), homePan, 0.001f);
+  CHECK(rig.app->flywheel().on());
+  rig.press(DS_BTN_DPAD_LEFT);
+  CHECK(!rig.app->flywheel().on());
   rig.press(DS_BTN_DPAD_DOWN);
   CHECK(!rig.motion().homing());
   rig.runMs(MS_PER_S / 2);
@@ -2384,7 +2484,7 @@ TEST(servo_adjust_a_b_x_rt_and_the_d_pad_do_not_do_their_normal_actions) {
   rig.runMs(kStrokeMs * 2);
   rig.pad.rt = 0;
   rig.runMs(kCtrlMs * 3);
-  CHECK_EQ(rig.trigger().shotsTotal(), (uint16_t)1);              // only the shot before adjust mode
+  CHECK_EQ(rig.trigger().shotsTotal(), (uint16_t)1);              // only the shot before teach mode
   // The stick still aims.
   rig.pad.rx = kStickMax;
   rig.runMs(MS_PER_S / 2);
@@ -2393,7 +2493,7 @@ TEST(servo_adjust_a_b_x_rt_and_the_d_pad_do_not_do_their_normal_actions) {
   rig.runMs(MS_PER_S / 2);
   // The shell: the same actions refused, aiming and stopping allowed.
   for (const std::string cmd : {"arm", "fire", "fly on", "mode full", "mag", "home", "sethome"})
-    CHECK(found(rig.shell(cmd), cmd + ": refused: in servo adjust"));
+    CHECK(found(rig.shell(cmd), cmd + ": refused: in servo teach"));
   CHECK(found(rig.shell("pan 10"), "pan 10.0: ok"));
   CHECK(found(rig.shell("stop"), "stop: ok"));
   CHECK(found(rig.shell("disarm"), "disarm: ok"));
@@ -2406,11 +2506,11 @@ TEST(servo_adjust_a_b_x_rt_and_the_d_pad_do_not_do_their_normal_actions) {
   CHECK(teaching(rig));
 }
 
-// KEY SAFETY TEST: every way out of adjust mode (link stops, connected = 0, mode toggle, power off,
+// KEY SAFETY TEST: every way out of teach mode (link stops, connected = 0, mode toggle, power off,
 // a stall fault, a state change by the shell, `servo off`) ends it, mid test stroke too: the servo
-// back at the REST in force, no dart counted, the summary printed, the adjust display gone. Only
-// `servo off` (like Menu) saves; every other exit says the angles stay for this run only.
-TEST(servo_adjust_ends_on_link_loss_power_off_mode_toggle_fault_and_state_change) {
+// back home (the PRE-FIRE in force: the magazine is loaded), no dart counted, the summary
+// printed, the teach display gone, the teach flywheels cut.
+TEST(servo_teach_ends_on_link_loss_power_off_mode_toggle_fault_and_state_change) {
   enum Exit { LINK_STOPS, NOT_CONNECTED, MODE_TOGGLE, POWER_OFF, STALL_FAULT, SHELL_CAL, SHELL_OFF, EXITS };
   const char* const names[] = {"link stops", "not connected", "mode toggle", "power off", "stall fault",
                                "shell cal", "servo off"};
@@ -2435,7 +2535,9 @@ TEST(servo_adjust_ends_on_link_loss_power_off_mode_toggle_fault_and_state_change
       rig.runMs(MS_PER_S / 2);
     }
     const uint8_t ammo = rig.trigger().ammo();
-    const uint32_t out = sweepMsFor(std::fabs((float)servoNow() - (float)fire));
+    rig.press(DS_BTN_DPAD_LEFT);            // the teach flywheels on: every exit cuts them
+    CHECK(rig.app->flywheel().on());
+    const uint32_t out = sweepMsFor(std::fabs((float)kPrefire - (float)fire));
     const uint32_t back = sweepMsFor(std::fabs((float)fire - (float)rest));
     rig.flush();                            // before the stroke: flushing runs the clock on
     const size_t from = rig.lines.size();
@@ -2448,7 +2550,7 @@ TEST(servo_adjust_ends_on_link_loss_power_off_mode_toggle_fault_and_state_change
     if (target[e] == P::HOLD_FIRE) CHECK_EQ(servoNow(), fire);
     if (target[e] == P::SWEEP_OUT || target[e] == P::SWEEP_BACK) CHECK(servoNow() != fire && servoNow() != rest);
     CHECK_EQ(rig.trigger().phase(), target[e]);
-    // The phase the test stroke was in the loop before adjust mode ended (IDLE: it had completed).
+    // The phase the test stroke was in the loop before teach mode ended (IDLE: it had completed).
     bool wasTeach = true;
     P wasPhase = rig.trigger().phase(), exitPhase = P::IDLE;
     rig.everyLoop = [&] {
@@ -2478,22 +2580,18 @@ TEST(servo_adjust_ends_on_link_loss_power_off_mode_toggle_fault_and_state_change
       CHECK(exitPhase != P::IDLE);           // still running when the link timed out
     else
       CHECK_EQ(exitPhase, target[e]);        // aborted in the phase it was made in
-    CHECK_EQ(servoNow(), e == POWER_OFF ? (int32_t)TRIGGER_REST_ANGLE : rest);   // power off: a new boot
-    CHECK_EQ(rig.trigger().ammo(), ammo);
+    // Power off: a new boot, ammo TRIGGER_AMMO_AT_BOOT (0: home is REST).
+    const int32_t bootHome = TRIGGER_AMMO_AT_BOOT > 0 ? kPrefire : (int32_t)TRIGGER_REST_ANGLE;
+    CHECK_EQ(servoNow(), e == POWER_OFF ? bootHome : kPrefire);
+    CHECK_EQ(rig.trigger().ammo(), e == POWER_OFF ? (uint8_t)TRIGGER_AMMO_AT_BOOT : ammo);
+    CHECK(!rig.app->flywheel().on());
+    CHECK(!rig.app->turret().status().teachFlywheel);
     CHECK_EQ(rig.trigger().shotsTotal(), (uint16_t)0);
     rig.flush();
     CHECK_EQ(countExact(rig, summaryLine(rest, fire), from), (size_t)1);
-    if (e == SHELL_OFF) {
-      CHECK_EQ(hal_host::storeSaves(), 1u);
-      CHECK_EQ(rig.countLines(savedPrefix(rest, fire), from), (size_t)1);
-    } else {
-      CHECK_EQ(hal_host::storeSaves(), 0u);
-      CHECK_EQ(rig.countLines("servo adjust: not saved (", from), (size_t)1);
-      CHECK_EQ(rig.countLines(restFire(rest, fire) + " stay for this run only", from), (size_t)1);
-    }
     rig.runMs(LCD_REFRESH_MS * 4);
-    CHECK(!startsWith(rig.lcd(0), LCD_TXT_SERVO_ADJUST));
-    CHECK(!allLeds(scaled(LED_COLOR_SERVO_ADJUST)));
+    CHECK(!startsWith(rig.lcd(0), LCD_TXT_SERVO_TEACH));
+    CHECK(!allLeds(scaled(LED_COLOR_SERVO_TEACH)));
     switch (e) {
       case LINK_STOPS:
       case NOT_CONNECTED:
@@ -2504,18 +2602,21 @@ TEST(servo_adjust_ends_on_link_loss_power_off_mode_toggle_fault_and_state_change
         CHECK_EQ(rig.trigger().restDeg(), (float)TRIGGER_REST_ANGLE);   // the records are gone
         CHECK_EQ(rig.trigger().fireDeg(), (float)TRIGGER_FIRE_ANGLE);
         rig.setPower(true);
-        CHECK(rig.toDisarmed());
-        CHECK_EQ(servoNow(), (int32_t)TRIGGER_REST_ANGLE);
-        CHECK(found(rig.shell("status"), "adjust=0 rest=" + std::to_string(TRIGGER_REST_ANGLE) + " fire=" +
-                                             std::to_string(TRIGGER_FIRE_ANGLE) + " (config.h)"));
+        CHECK(rig.toDisarmed(false));
+        CHECK_EQ(servoNow(), bootHome);
+        CHECK_EQ(rig.trigger().ammo(), (uint8_t)TRIGGER_AMMO_AT_BOOT);
+        CHECK(found(rig.statusText(), "teach=0 rest=" + std::to_string(TRIGGER_REST_ANGLE) + " (config.h) fire=" +
+                                          std::to_string(TRIGGER_FIRE_ANGLE) + " (config.h) prefire=" +
+                                          std::to_string(TRIGGER_PREFIRE_ANGLE) + " (config.h) clear=" +
+                                          std::to_string(TRIGGER_CLEAR_ANGLE) + " (config.h)"));
         break;
       case STALL_FAULT: {
         CHECK_EQ(rig.state(), (uint8_t)DS_STATE_FAULT);
         const size_t f = rig.lines.size();
-        rig.press(DS_BTN_START);            // and Menu cannot start it in FAULT
+        rig.press(DS_BTN_Y);                // and Y cannot start it in FAULT
         rig.flush();
         CHECK(!teaching(rig));
-        CHECK_EQ(rig.countLines("Menu (servo adjust) in FAULT: refused", f), (size_t)1);
+        CHECK_EQ(rig.countLines("Y (servo teach) in FAULT: refused", f), (size_t)1);
         break;
       }
       case SHELL_CAL:
@@ -2536,9 +2637,9 @@ TEST(servo_adjust_ends_on_link_loss_power_off_mode_toggle_fault_and_state_change
   }
 }
 
-// The recorded angles, saved by Menu, drive every real stroke after adjust mode (and an abort rests
-// at the recorded REST), and still do after the power toggle's reboot (OFF -> BOOT).
-TEST(servo_adjust_recorded_angles_drive_real_strokes_until_power_off) {
+// The recorded angles drive every real stroke after teach mode (and an abort goes home to the
+// PRE-FIRE in force), until the power toggle opens; then config.h's angles again.
+TEST(servo_teach_recorded_angles_drive_real_strokes_until_power_off) {
   Rig rig;
   CHECK(toTeach(rig));
   for (int k = 0; k < 3; k++) rig.press(kAwaySmall);
@@ -2548,18 +2649,18 @@ TEST(servo_adjust_recorded_angles_drive_real_strokes_until_power_off) {
   rig.press(DS_BTN_B);
   const int32_t fire = servoNow();
   CHECK(rest != (int32_t)TRIGGER_REST_ANGLE && fire != (int32_t)TRIGGER_FIRE_ANGLE);
-  rig.press(DS_BTN_START);
+  rig.press(DS_BTN_Y);
   CHECK(!teaching(rig));
-  CHECK_EQ(servoNow(), rest);
-  // Armed and spun up, one pull: the recorded FIRE, back to the recorded REST, one dart.
+  CHECK_EQ(servoNow(), kPrefire);
+  // Armed and spun up, one pull: the recorded FIRE, the recorded REST, one dart, PRE-FIRE.
   rig.press(DS_BTN_A);
   CHECK_EQ(rig.state(), (uint8_t)DS_STATE_ARMED);
   rig.pad.buttons = DS_BTN_LB;
   rig.runMs(FLYWHEEL_SPINUP_MS + kCtrlMs * 3);
   // The commanded angles swept between the two records, both ends reached, never past either.
   auto sweptBetween = [](const std::set<int32_t>& a, int32_t r, int32_t f) {
-    return !a.empty() && *a.begin() == std::min(r, f) && *a.rbegin() == std::max(r, f) &&
-           (a.size() > 2 || std::abs(r - f) <= 1);
+    return !a.empty() && *a.begin() == std::min({r, f, kPrefire}) && *a.rbegin() == std::max({r, f, kPrefire}) &&
+           a.count(r) && a.count(f) && (a.size() > 3 || std::abs(r - f) <= 1);
   };
   std::set<int32_t> angles;
   rig.everyLoop = [&] { angles.insert(servoNow()); };
@@ -2569,8 +2670,8 @@ TEST(servo_adjust_recorded_angles_drive_real_strokes_until_power_off) {
   CHECK(sweptBetween(angles, rest, fire));
   CHECK_EQ(rig.trigger().shotsTotal(), (uint16_t)1);
   CHECK_EQ(rig.trigger().ammo(), (uint8_t)(MAG_CAPACITY - 1));
-  CHECK_EQ(servoNow(), rest);
-  // A disarm mid stroke rests at the recorded REST too.
+  CHECK_EQ(servoNow(), kPrefire);
+  // A disarm mid stroke goes home (PRE-FIRE) too.
   rig.pad.rt = kReleased;
   rig.runMs(kCtrlMs * 3);
   rig.pad.rt = kPulled;
@@ -2578,40 +2679,39 @@ TEST(servo_adjust_recorded_angles_drive_real_strokes_until_power_off) {
   CHECK_EQ(servoNow(), fire);
   rig.pad.buttons = (uint16_t)(rig.pad.buttons | DS_BTN_A);
   CHECK(rig.runUntil([&] { return rig.state() == DS_STATE_DISARMED; }, kCtrlMs * 3));
-  CHECK_EQ(servoNow(), rest);
+  CHECK_EQ(servoNow(), kPrefire);
   CHECK_EQ(rig.trigger().shotsTotal(), (uint16_t)1);
-  // Power off and on: a new boot, on the saved angles.
+  // Power off and on: a new boot, config.h's angles.
   rig.pad = Pad();
   rig.setPower(false);
   CHECK(rig.runUntil([&] { return rig.state() == DS_STATE_OFF; }, TOGGLE_DEBOUNCE_MS + kCtrlMs));
-  CHECK_EQ(servoNow(), rest);
   rig.setPower(true);
   CHECK(rig.toArmedSpunUp());
-  CHECK_EQ(servoNow(), rest);
+  CHECK_EQ(servoNow(), kPrefire);   // toDisarmed's X: config.h's PRE-FIRE
   angles.clear();
   rig.everyLoop = [&] { angles.insert(servoNow()); };
   rig.pad.rt = kPulled;
   rig.runMs(kStrokeMs * 2);
   rig.everyLoop = nullptr;
-  CHECK(sweptBetween(angles, rest, fire));
-  CHECK_EQ(hal_host::storeSaves(), 1u);
+  CHECK(sweptBetween(angles, (int32_t)TRIGGER_REST_ANGLE, (int32_t)TRIGGER_FIRE_ANGLE));
 }
 
-// The shell equivalents: servo adjust|<deg>|rest|fire|stroke|off, only from DISARMED, through the
-// same rules; `status` shows the teach state and the angles; malformed lines never run.
-TEST(servo_adjust_shell_commands_follow_the_pad_rules) {
+// The shell equivalents: servo teach|<deg>|rest|fire|setprefire|prefire|stroke|off, only from
+// DISARMED, through the same rules; `status` shows the teach state and the angles; malformed
+// lines never run. (No X here: the boot magazine, TRIGGER_AMMO_AT_BOOT.)
+TEST(servo_teach_shell_commands_follow_the_pad_rules) {
   Rig rig;
   rig.pad.send = false;
   CHECK(rig.runUntil([&] { return rig.state() == DS_STATE_PAIRING; }, 15 * MS_PER_S));
-  CHECK(found(rig.shell("servo adjust"), "servo adjust: refused: not in this state"));
+  CHECK(found(rig.shell("servo teach"), "servo teach: refused: not in this state"));
   rig.pad.send = true;
   rig.runMs(kCtrlMs * 3);
   CHECK_EQ(rig.state(), (uint8_t)DS_STATE_DISARMED);
-  for (const std::string w : {"30", "rest", "fire", "stroke"})
-    CHECK(found(rig.shell("servo " + w), "servo " + w + ": refused: not in servo adjust"));
+  for (const std::string w : {"30", "rest", "fire", "stroke", "prefire", "setprefire", "clear", "setclear"})
+    CHECK(found(rig.shell("servo " + w), "servo " + w + ": refused: not in servo teach"));
   CHECK(found(rig.shell("servo off"), "servo off: ok"));   // nothing to leave
   CHECK(!teaching(rig));
-  CHECK(found(rig.shell("servo adjust"), "servo adjust: ok"));
+  CHECK(found(rig.shell("servo teach"), "servo teach: ok"));
   CHECK(teaching(rig));
   const int32_t rest = clampTeach(TRIGGER_REST_ANGLE + 3);
   const int32_t fire = clampTeach(TRIGGER_FIRE_ANGLE - 2);
@@ -2621,6 +2721,7 @@ TEST(servo_adjust_shell_commands_follow_the_pad_rules) {
   CHECK(found(rig.shell("servo rest"), "servo rest: ok"));
   rig.flush();
   CHECK_EQ(countExact(rig, restLine(rest), from), (size_t)1);
+  CHECK(found(rig.shell("servo stroke"), "servo stroke: refused: FIRE not recorded"));
   CHECK(found(rig.shell("servo " + std::to_string(fire)), ": ok"));
   from = rig.lines.size();
   CHECK(found(rig.shell("servo fire"), "servo fire: ok"));
@@ -2630,62 +2731,76 @@ TEST(servo_adjust_shell_commands_follow_the_pad_rules) {
   CHECK(found(rig.shell("servo stroke"), "servo stroke: ok"));
   CHECK(rig.trigger().testStrokeActive());
   CHECK(found(rig.shell("servo rest"), "servo rest: refused: not ready"));   // mid stroke
-  rig.runMs(kStrokeMs);
-  CHECK(!rig.trigger().strokeActive());
-  CHECK_EQ(servoNow(), rest);
+  CHECK(found(rig.shell("servo setprefire"), "servo setprefire: refused: not ready"));
+  CHECK(found(rig.shell("servo prefire"), "servo prefire: refused: not ready"));
+  CHECK(found(rig.shell("servo setclear"), "servo setclear: refused: not ready"));
+  CHECK(found(rig.shell("servo clear"), "servo clear: refused: not ready"));
+  CHECK(rig.runUntil([&] { return !rig.trigger().strokeActive(); }, kStrokeMs * 2));
+  CHECK_EQ(servoNow(), kPrefire);                      // a test stroke ends at PRE-FIRE, whatever the ammo
   CHECK_EQ(rig.trigger().ammo(), ammo);
-  CHECK(found(rig.shell("status"), "status servo=" + std::to_string(rest) + " adjust=1 rest=" + std::to_string(rest) +
-                                       " fire=" + std::to_string(fire) + " (not saved)"));
+  // PRE-FIRE: `servo prefire` goes to the one in force, `servo setprefire` records (d-pad right).
+  CHECK(found(rig.shell("servo " + std::to_string(rest)), ": ok"));
+  CHECK(found(rig.shell("servo prefire"), "servo prefire: ok"));
+  CHECK_EQ(servoNow(), kPrefire);
+  const int32_t prefire = clampTeach(TRIGGER_PREFIRE_ANGLE + 4);
+  CHECK(found(rig.shell("servo " + std::to_string(prefire)), ": ok"));
   from = rig.lines.size();
-  CHECK(found(rig.shell("servo off"), "servo off: ok"));   // saves, as Menu does
+  CHECK(found(rig.shell("servo setprefire"), "servo setprefire: ok"));
+  rig.flush();
+  CHECK_EQ(countExact(rig, prefireLine(prefire), from), (size_t)1);
+  CHECK(found(rig.shell("servo " + std::to_string(rest)), ": ok"));
+  CHECK(found(rig.shell("servo prefire"), "servo prefire: ok"));
+  CHECK_EQ(servoNow(), prefire);
+  // CLEAR: `servo clear` goes to the one in force, `servo setclear` records (View).
+  CHECK(found(rig.shell("servo clear"), "servo clear: ok"));
+  CHECK_EQ(servoNow(), (int32_t)TRIGGER_CLEAR_ANGLE);
+  const int32_t clear = clampTeach(TRIGGER_CLEAR_ANGLE - 5);
+  CHECK(found(rig.shell("servo " + std::to_string(clear)), ": ok"));
+  from = rig.lines.size();
+  CHECK(found(rig.shell("servo setclear"), "servo setclear: ok"));
+  rig.flush();
+  CHECK_EQ(countExact(rig, clearLine(clear), from), (size_t)1);
+  CHECK(found(rig.shell("servo prefire"), "servo prefire: ok"));
+  CHECK(found(rig.shell("servo clear"), "servo clear: ok"));
+  CHECK_EQ(servoNow(), clear);
+  CHECK(found(rig.shell("servo prefire"), "servo prefire: ok"));
+  CHECK(found(rig.statusText(), "status servo=" + std::to_string(prefire) + " teach=1 rest=" + std::to_string(rest) +
+                                    " (recorded) fire=" + std::to_string(fire) + " (recorded) prefire=" +
+                                    std::to_string(prefire) + " (recorded) clear=" + std::to_string(clear) +
+                                    " (recorded)"));
+  from = rig.lines.size();
+  CHECK(found(rig.shell("servo off"), "servo off: ok"));
   rig.flush();
   CHECK(!teaching(rig));
   CHECK_EQ(countExact(rig, summaryLine(rest, fire), from), (size_t)1);
-  CHECK_EQ(rig.countLines(savedPrefix(rest, fire), from), (size_t)1);
-  CHECK(found(rig.shell("status"), "adjust=0 rest=" + std::to_string(rest) + " fire=" + std::to_string(fire) + " (saved)"));
-  // Toggle on and off again with `servo adjust` and its old name `servo teach`; nothing changed,
-  // nothing written.
-  for (const std::string word : {"adjust", "teach"}) {
-    CHECK(found(rig.shell("servo " + word), "servo " + word + ": ok"));
-    CHECK(teaching(rig));
-    from = rig.lines.size();
-    CHECK(found(rig.shell("servo " + word), "servo " + word + ": ok"));
-    CHECK(!teaching(rig));
-    rig.flush();
-    CHECK_EQ(countExact(rig, unchangedLine(rest, fire), from), (size_t)1);
-  }
-  CHECK_EQ(hal_host::storeSaves(), 1u);
-  // `servo reset` is View: config.h's angles in force, outside adjust mode refused.
-  CHECK(found(rig.shell("servo reset"), "servo reset: refused: not in servo adjust"));
-  CHECK(found(rig.shell("servo adjust"), "servo adjust: ok"));
-  CHECK(found(rig.shell("servo reset"), "servo reset: ok"));
-  CHECK_EQ(servoNow(), clampTeach(TRIGGER_REST_ANGLE));
-  CHECK_EQ(rig.trigger().restDeg(), (float)TRIGGER_REST_ANGLE);
-  CHECK_EQ(rig.trigger().fireDeg(), (float)TRIGGER_FIRE_ANGLE);
-  CHECK(found(rig.shell("servo off"), "servo off: ok"));
-  CHECK_EQ(hal_host::storeSaves(), 2u);
-  CHECK(found(rig.shell("status"), "fire=" + std::to_string(TRIGGER_FIRE_ANGLE) + " (saved)"));
+  CHECK_EQ(countExact(rig, summary2Line(prefire, clear), from), (size_t)1);
+  CHECK_EQ(servoNow(), TRIGGER_AMMO_AT_BOOT > 0 ? prefire : rest);   // home
+  CHECK(found(rig.shell("status"), "teach=0"));
+  // Toggle on and off again with `servo teach`.
+  CHECK(found(rig.shell("servo teach"), "servo teach: ok"));
+  CHECK(teaching(rig));
+  CHECK(found(rig.shell("servo teach"), "servo teach: ok"));
+  CHECK(!teaching(rig));
   // Never from ARMED.
   CHECK(found(rig.shell("arm"), "arm: ok"));
-  CHECK(found(rig.shell("servo adjust"), "servo adjust: refused: not in this state"));
-  CHECK(found(rig.shell("servo " + std::to_string(rest)), "refused: not in servo adjust"));
+  CHECK(found(rig.shell("servo teach"), "servo teach: refused: not in this state"));
+  CHECK(found(rig.shell("servo " + std::to_string(rest)), "refused: not in servo teach"));
   CHECK(!teaching(rig));
   CHECK_EQ(rig.state(), (uint8_t)DS_STATE_ARMED);
   // Malformed lines never run.
-  for (const std::string j : {"servo", "servo 12.5", "servo up", "servo 1 2", "servo adjust now", "servo reset now",
-                               "servos", "SERVO adjust", "servo adjusts"}) {
+  for (const std::string j : {"servo", "servo 12.5", "servo up", "servo 1 2", "servo teach now", "servos", "SERVO teach"}) {
     const std::string r = rig.shell(j);
     CHECK(r.find(": ok") == std::string::npos);
     CHECK(found(r, "not run") || found(r, "unknown command"));
   }
-  CHECK(found(rig.shell("help"), "servo adjust|<deg>|rest|fire|reset|stroke|off"));
+  CHECK(found(rig.shell("help"), "servo teach|<deg>|rest|fire|setprefire|prefire|setclear|clear|stroke|off"));
 }
 
-// KEY SAFETY TEST: a long random session (every button, Menu included, sticks, trigger, link drops,
+// KEY SAFETY TEST: a long random session (every button, Y included, sticks, trigger, link drops,
 // mode and power toggles, stall spikes), with DISARMED allowed to spin the flywheels: whenever
-// adjust mode is on the state is DISARMED, the flywheels are still, no real stroke runs and no
-// dart is counted; the LED brightness clamp holds throughout.
-TEST(servo_adjust_random_session_keeps_every_rule_and_the_brightness_clamp) {
+// teach mode is on the state is DISARMED, the flywheels turn only with its d-pad-left toggle on,
+// no real stroke runs and no dart is counted; the LED brightness clamp holds throughout.
+TEST(servo_teach_random_session_keeps_every_rule_and_the_brightness_clamp) {
   App::Config cfg = stallOn();
   cfg.turret.flywheelRequiresArmed = false;
   Rig rig(cfg);
@@ -2709,11 +2824,13 @@ TEST(servo_adjust_random_session_keeps_every_rule_and_the_brightness_clamp) {
       const bool test = rig.trigger().testStrokeActive();
       if (test && !wasTest) testStrokes++;
       wasTest = test;
-      bad = bad || rig.state() != DS_STATE_DISARMED || rig.app->flywheel().on() || rig.app->flywheel().duty() > 0 ||
+      const bool teachFly = rig.app->turret().status().teachFlywheel;
+      bad = bad || rig.state() != DS_STATE_DISARMED ||
+            (!teachFly && (rig.app->flywheel().on() || rig.app->flywheel().duty() > 0)) ||
             rig.trigger().ammo() != ammo0 || rig.trigger().shotsTotal() != shots0 ||
             (rig.trigger().strokeActive() && !test) || rig.app->turret().triggerInput().armed;
     } else {
-      bad = bad || rig.trigger().testStrokeActive();   // a test stroke never outlives adjust mode
+      bad = bad || rig.trigger().testStrokeActive();   // a test stroke never outlives teach mode
       wasTest = false;
     }
     was = t;
@@ -2726,14 +2843,13 @@ TEST(servo_adjust_random_session_keeps_every_rule_and_the_brightness_clamp) {
     else if (r < 7) hal_host::setAnalog(PIN_STALL_SENSE, (uint16_t)(pct(rnd) * ADC_MAX_COUNTS / 100));
     rig.pad.rx = (int16_t)stick(rnd);
     rig.pad.ry = (int16_t)stick(rnd);
-    if (pct(rnd) < 40) rig.pad.rx = rig.pad.ry = 0;   // often still, so Menu can save and leave
     rig.pad.rt = (uint16_t)trig(rnd);
     rig.pad.buttons = (uint16_t)(rnd() & DS_BTN_ALL);
     rig.runMs(100);
     if (k % 50 == 49) rig.setPower(true), rig.pad.send = true, hal_host::setAnalog(PIN_STALL_SENSE, kA2Baseline);
   }
   rig.everyLoop = nullptr;
-  std::printf("info servo adjust random session: %u entries, %u loops in adjust mode, %u test strokes\n", entries, teachLoops,
+  std::printf("info servo teach random session: %u entries, %u loops in teach mode, %u test strokes\n", entries, teachLoops,
               testStrokes);
   CHECK(entries >= 10u);
   CHECK(testStrokes >= 1u);
@@ -2749,19 +2865,19 @@ TEST(servo_adjust_random_session_keeps_every_rule_and_the_brightness_clamp) {
   CHECK_EQ(blockingWrites(), 0u);
 }
 
-// The frame whose Menu switches adjust mode acts on nothing else, LB included: with DISARMED allowed
-// to spin (toggle mode), a Menu + LB press that leaves adjust mode does not flip the flywheel latch
+// The frame whose Y switches teach mode acts on nothing else, LB included: with DISARMED allowed
+// to spin (toggle mode), a Y + LB press that leaves teach mode does not flip the flywheel latch
 // on, and one that enters it leaves nothing behind; a later LB press toggles as usual.
-TEST(servo_adjust_menu_with_lb_in_the_same_frame_never_flips_the_flywheel_latch) {
+TEST(servo_teach_y_with_lb_in_the_same_frame_never_flips_the_flywheel_latch) {
   App::Config cfg = App::defaults();
   cfg.turret.flywheelRequiresArmed = false;
   cfg.turret.flywheelHoldMode = false;
   Rig rig(cfg);
   CHECK(rig.toDisarmed());
-  rig.press((uint16_t)(DS_BTN_START | DS_BTN_LB));   // enters
+  rig.press((uint16_t)(DS_BTN_Y | DS_BTN_LB));   // enters
   CHECK(teaching(rig));
   CHECK(!rig.app->flywheel().on());
-  rig.press((uint16_t)(DS_BTN_START | DS_BTN_LB));   // leaves
+  rig.press((uint16_t)(DS_BTN_Y | DS_BTN_LB));   // leaves
   CHECK(!teaching(rig));
   CHECK_EQ(rig.state(), (uint8_t)DS_STATE_DISARMED);
   rig.runMs(FLYWHEEL_RAMP_MS);
@@ -2769,453 +2885,6 @@ TEST(servo_adjust_menu_with_lb_in_the_same_frame_never_flips_the_flywheel_latch)
   CHECK_EQ(hal_host::pwmDuty(PIN_FLY_ENA), (uint8_t)0);
   rig.press(DS_BTN_LB);                          // DISARMED rules again: LB toggles the latch
   CHECK(rig.app->flywheel().on());
-}
-
-// Y is unused since Menu took SERVO ADJUST (owner, 2026-11-03): in CALIBRATING, DISARMED and ARMED
-// a Y press does nothing at all, is never refused and never logged.
-TEST(y_does_nothing_anywhere) {
-  Rig rig;
-  rig.runMs(MS_PER_S);
-  CHECK_EQ(rig.state(), (uint8_t)DS_STATE_CALIBRATING);
-  rig.flush();
-  size_t from = rig.lines.size();
-  uint32_t refusals = rig.app->turret().status().refusals;
-  rig.press(DS_BTN_Y);
-  rig.flush();
-  CHECK_EQ(rig.app->turret().status().refusals, refusals);
-  CHECK_EQ(rig.countLines("refused", from) + rig.countLines("servo adjust", from), (size_t)0);
-  CHECK(rig.toDisarmed());
-  for (uint8_t want : {DS_STATE_DISARMED, DS_STATE_ARMED}) {
-    if (want == DS_STATE_ARMED) rig.press(DS_BTN_A);
-    CHECK_EQ(rig.state(), want);
-    rig.flush();
-    from = rig.lines.size();
-    refusals = rig.app->turret().status().refusals;
-    const Trigger::Phase phase = rig.trigger().phase();
-    const uint8_t mode = rig.trigger().fireMode();
-    rig.press(DS_BTN_Y);
-    rig.pad.buttons = DS_BTN_Y;                    // and held
-    rig.runMs(MS_PER_S / 2);
-    rig.pad.buttons = 0;
-    rig.runMs(BUTTON_DEBOUNCE_MS + kCtrlMs * 2);
-    rig.flush();
-    CHECK(!teaching(rig));
-    CHECK_EQ(rig.state(), want);
-    CHECK_EQ(rig.app->turret().status().refusals, refusals);
-    CHECK_EQ(rig.trigger().phase(), phase);
-    CHECK_EQ(rig.trigger().fireMode(), mode);
-    CHECK_EQ(rig.trigger().ammo(), (uint8_t)MAG_CAPACITY);
-    CHECK_EQ(rig.countLines("refused", from) + rig.countLines("servo adjust", from) +
-                 rig.countLines("state ", from), (size_t)0);   // nothing logged about it
-  }
-}
-
-// SERVO ADJUST's cyan wins over the empty-magazine flash: at ammo 0 adjust mode shows solid cyan (the
-// telemetry flag drops too), and leaving it brings the purple flash back over green at once.
-TEST(servo_adjust_cyan_wins_over_the_empty_flash) {
-  Rig rig;
-  CHECK(rig.toArmedSpunUp());
-  for (unsigned k = 0; k < MAG_CAPACITY; k++) {   // semi: one stroke per pull, then the cooldown
-    rig.pad.rt = kPulled;
-    rig.runMs(kStrokeMs + kCtrlMs * 2);
-    rig.pad.rt = kReleased;
-    rig.runMs(kCoolMs + kCtrlMs * 3);
-  }
-  CHECK_EQ(rig.trigger().ammo(), (uint8_t)0);
-  rig.pad.buttons = 0;
-  rig.press(DS_BTN_A);
-  CHECK_EQ(rig.state(), (uint8_t)DS_STATE_DISARMED);
-  CHECK(rig.app->turret().display().emptyMagBlink);
-  rig.press(DS_BTN_START);
-  CHECK(teaching(rig));
-  CHECK(!rig.app->turret().display().emptyMagBlink);
-  const Rgb cyan = scaled(LED_COLOR_SERVO_ADJUST);
-  const Rgb purple = scaled(LED_COLOR_EMPTY_MAG);
-  const Rgb green = scaled(LED_COLOR_DISARMED);
-  uint32_t cyanShows = 0, otherShows = 0;
-  rig.onShow = [&] { (allLeds(cyan) ? cyanShows : otherShows)++; };
-  rig.runMs(2 * LED_EMPTY_FLASH_PERIOD_MS);
-  CHECK(cyanShows > 0u);
-  CHECK_EQ(otherShows, 0u);
-  CHECK(!(rig.telemetry.back().flags & DS_TELEM_FLAG_EMPTY_MAG_BLINK));
-  // Leave: the flash is back (its first flash at once), over green.
-  rig.onShow = nullptr;
-  rig.pad.buttons = DS_BTN_START;
-  CHECK(rig.runUntil([&] { return !teaching(rig); }, kCtrlMs * 3));
-  rig.pad.buttons = 0;
-  CHECK(rig.app->turret().display().emptyMagBlink);
-  uint32_t purpleShows = 0, greenShows = 0;
-  otherShows = 0;
-  bool firstIsPurple = false;
-  rig.onShow = [&] {
-    if (purpleShows + greenShows + otherShows == 0) firstIsPurple = allLeds(purple);
-    if (allLeds(purple)) purpleShows++;
-    else if (allLeds(green)) greenShows++;
-    else otherShows++;
-  };
-  rig.runMs(2 * LED_EMPTY_FLASH_PERIOD_MS);
-  rig.onShow = nullptr;
-  CHECK(firstIsPurple);
-  CHECK(purpleShows > 0u && greenShows > purpleShows);
-  CHECK_EQ(otherShows, 0u);
-}
-
-// =====================================================================================================
-// SERVO ADJUST's saved angles (owner, 2026-11-03: the data flash record, ServoStore.h), through the
-// host HAL's fake store: hal_host::reset() blanks it, reboot() (Rig keepStore) keeps it
-// =====================================================================================================
-namespace {
-
-// Angles that differ from config.h's and from each other, inside the adjust range.
-int32_t awayFrom(int32_t deg, int32_t by) {
-  return deg + by <= SERVO_ADJUST_MAX_DEG ? deg + by : deg - by;
-}
-const int32_t kSavedRest = awayFrom(TRIGGER_REST_ANGLE, 7);
-const int32_t kSavedFire = awayFrom(TRIGGER_FIRE_ANGLE, 9);
-
-void writeStore(const uint8_t* rec, size_t n) {
-  for (size_t i = 0; i < n; i++) hal_host::storeSetByte(i, rec[i]);
-}
-// A valid record in the fake store (call after hal_host::reset(), before a keepStore Rig).
-void storeRecord(int32_t rest, int32_t fire) {
-  servostore::Angles a;
-  a.rest = (int16_t)rest;
-  a.fire = (int16_t)fire;
-  uint8_t rec[servostore::REC_BYTES];
-  servostore::encode(a, rec);
-  writeStore(rec, sizeof rec);
-}
-// What the fake store holds, decoded.
-servostore::Load storedAngles(servostore::Angles& out) {
-  uint8_t rec[servostore::REC_BYTES];
-  for (size_t i = 0; i < sizeof rec; i++) rec[i] = hal_host::storeByte(i);
-  return servostore::decode(rec, out);
-}
-bool storeHolds(int32_t rest, int32_t fire) {
-  servostore::Angles a;
-  return storedAngles(a) == servostore::Load::OK && a.rest == rest && a.fire == fire;
-}
-std::string loadedLine(int32_t rest, int32_t fire) {
-  std::string l = "servo adjust: loaded saved " + restFire(rest, fire);
-  if (rest != TRIGGER_REST_ANGLE || fire != TRIGGER_FIRE_ANGLE)
-    l += " (config.h has " + restFire(TRIGGER_REST_ANGLE, TRIGGER_FIRE_ANGLE) + ", not used)";
-  return l;
-}
-std::string noSavedLine(bool invalid) {
-  return "servo adjust: no saved angles, using config.h " + restFire(TRIGGER_REST_ANGLE, TRIGGER_FIRE_ANGLE) +
-         (invalid ? " (stored record invalid)" : "");
-}
-bool anglesInForce(const Rig& rig, int32_t rest, int32_t fire) {
-  return rig.trigger().restDeg() == (float)rest && rig.trigger().fireDeg() == (float)fire;
-}
-
-}  // namespace
-
-// The record's codec on its own: every angle pair round-trips; all 0xFF is BLANK; any single bit
-// flipped anywhere, a wrong magic or version, or an angle past SERVO_SPAN_DEG is INVALID.
-TEST(servo_store_record_round_trips_and_every_damage_is_invalid) {
-  using servostore::Load;
-  uint32_t pairs = 0;
-  for (int32_t r = 0; r <= SERVO_SPAN_DEG; r++)
-    for (int32_t f = 0; f <= SERVO_SPAN_DEG; f++) {
-      servostore::Angles a, back;
-      a.rest = (int16_t)r;
-      a.fire = (int16_t)f;
-      uint8_t rec[servostore::REC_BYTES];
-      servostore::encode(a, rec);
-      if (!CHECK(servostore::decode(rec, back) == Load::OK && servostore::sameAngles(a, back))) return;
-      pairs++;
-    }
-  CHECK_EQ(pairs, (uint32_t)((SERVO_SPAN_DEG + 1) * (SERVO_SPAN_DEG + 1)));
-  uint8_t blank[servostore::REC_BYTES];
-  std::memset(blank, BYTE_MASK, sizeof blank);
-  servostore::Angles untouched;
-  untouched.rest = 1;
-  CHECK(servostore::decode(blank, untouched) == Load::BLANK);
-  CHECK_EQ(untouched.rest, (int16_t)1);                        // left alone unless OK
-  servostore::Angles a;
-  a.rest = (int16_t)kSavedRest;
-  a.fire = (int16_t)kSavedFire;
-  uint8_t good[servostore::REC_BYTES];
-  servostore::encode(a, good);
-  for (size_t i = 0; i < sizeof good; i++)
-    for (int bit = 0; bit < BITS_PER_BYTE; bit++) {
-      uint8_t bad[servostore::REC_BYTES];
-      std::memcpy(bad, good, sizeof bad);
-      bad[i] = (uint8_t)(bad[i] ^ (1u << bit));
-      servostore::Angles out;
-      if (!CHECK(servostore::decode(bad, out) == Load::INVALID)) return;
-    }
-  // Wrong magic / version / an angle the servo cannot take, each with a CRC that matches.
-  const size_t fields[] = {servostore::REC_MAGIC_HI, servostore::REC_VERSION, servostore::REC_REST, servostore::REC_FIRE};
-  for (size_t field : fields) {
-    uint8_t bad[servostore::REC_BYTES];
-    std::memcpy(bad, good, sizeof bad);
-    bad[field] = field == servostore::REC_REST || field == servostore::REC_FIRE ? (uint8_t)(SERVO_SPAN_DEG + 1)
-                                                                              : (uint8_t)(bad[field] + 1);
-    bad[servostore::REC_CRC] = ds_crc8(bad, servostore::REC_CRC);
-    servostore::Angles out;
-    CHECK(servostore::decode(bad, out) == Load::INVALID);
-  }
-  // Half-written (the start blank, the rest not): invalid, never blank.
-  uint8_t half[servostore::REC_BYTES];
-  std::memcpy(half, good, sizeof half);
-  half[servostore::REC_MAGIC_LO] = BYTE_MASK;
-  CHECK(servostore::decode(half, a) == Load::INVALID);
-}
-
-// Boot: a valid record's angles replace config.h's for the run (strokes, the servo's rest, adjust
-// mode's start and LCD row 1), logged whatever the level; a blank store or any invalid record leaves
-// config.h's, and says which.
-TEST(servo_adjust_boot_loads_a_valid_record_and_falls_back_on_blank_or_corrupt) {
-  {
-    Rig rig;                                       // a new board: blank store
-    rig.flush();
-    CHECK_EQ(countExact(rig, noSavedLine(false)), (size_t)1);
-    CHECK_EQ(hal_host::storeLoads(), 1u);          // read once, at boot
-    CHECK(anglesInForce(rig, TRIGGER_REST_ANGLE, TRIGGER_FIRE_ANGLE));
-    CHECK_EQ(servoNow(), (int32_t)TRIGGER_REST_ANGLE);
-    CHECK(found(rig.shell("status"), "rest=" + std::to_string(TRIGGER_REST_ANGLE) + " fire=" +
-                                         std::to_string(TRIGGER_FIRE_ANGLE) + " (config.h)"));
-  }
-  {
-    hal_host::reset();
-    storeRecord(kSavedRest, kSavedFire);
-    Rig rig(App::defaults(), true, false, true);
-    rig.flush();
-    CHECK_EQ(countExact(rig, loadedLine(kSavedRest, kSavedFire)), (size_t)1);
-    CHECK(anglesInForce(rig, kSavedRest, kSavedFire));
-    CHECK(rig.app->turret().status().savedRecord);
-    CHECK_EQ(servoNow(), kSavedRest);              // the servo waits at the saved REST from boot
-    CHECK(toTeach(rig));
-    CHECK_EQ(servoNow(), clampTeach(kSavedRest));  // adjust mode starts from the angles in force
-    rig.runMs(LCD_REFRESH_MS * 4);
-    CHECK_EQ(rig.lcd(1), teachRow1(std::to_string(kSavedRest), std::to_string(kSavedFire)));
-    CHECK(found(rig.shell("status"), "rest=" + std::to_string(kSavedRest) + " fire=" + std::to_string(kSavedFire) +
-                                         " (saved)"));
-    rig.press(DS_BTN_START);                       // nothing changed: nothing written
-    CHECK_EQ(hal_host::storeSaves(), 0u);
-  }
-  // Damaged records: a flipped CRC, another magic, another version, an angle past the span.
-  for (int damage = 0; damage < 4; damage++) {
-    hal_host::reset();
-    servostore::Angles a;
-    a.rest = (int16_t)kSavedRest;
-    a.fire = (int16_t)kSavedFire;
-    uint8_t rec[servostore::REC_BYTES];
-    servostore::encode(a, rec);
-    if (damage == 0) rec[servostore::REC_CRC] = (uint8_t)(rec[servostore::REC_CRC] ^ 1u);
-    if (damage == 1) rec[servostore::REC_MAGIC_LO] = (uint8_t)(rec[servostore::REC_MAGIC_LO] + 1);
-    if (damage == 2) rec[servostore::REC_VERSION] = (uint8_t)(SERVO_STORE_VERSION + 1);
-    if (damage == 3) rec[servostore::REC_FIRE] = (uint8_t)(SERVO_SPAN_DEG + 1);
-    if (damage != 0) rec[servostore::REC_CRC] = ds_crc8(rec, servostore::REC_CRC);
-    writeStore(rec, sizeof rec);
-    Rig rig(App::defaults(), true, false, true);
-    rig.flush();
-    CHECK_EQ(countExact(rig, noSavedLine(true)), (size_t)1);
-    CHECK(anglesInForce(rig, TRIGGER_REST_ANGLE, TRIGGER_FIRE_ANGLE));
-    CHECK(!rig.app->turret().status().savedRecord);
-  }
-}
-
-// KEY SAFETY TEST (the one blocking call): leaving with Menu writes the record only when the angles
-// in force differ from the saved ones, only in DISARMED with no stroke (a test stroke is aborted
-// first) and no axis moving (Menu is refused while one moves); a link loss never writes. The fake
-// save blocks for the typical 50 ms and the link survives it.
-TEST(servo_adjust_menu_saves_only_changed_angles_and_link_loss_never_saves) {
-  Rig rig;
-  CHECK(toTeach(rig));
-  size_t from = rig.lines.size();
-  rig.press(DS_BTN_START);                         // unchanged
-  rig.flush();
-  CHECK_EQ(countExact(rig, unchangedLine(TRIGGER_REST_ANGLE, TRIGGER_FIRE_ANGLE), from), (size_t)1);
-  CHECK_EQ(hal_host::storeSaves(), 0u);
-  // Changed, then the link drops: not saved, but in force for the rest of this run.
-  CHECK(toTeach(rig));
-  rig.press(kAwaySmall);
-  rig.press(DS_BTN_A);
-  const int32_t rest = servoNow();
-  CHECK(rest != (int32_t)TRIGGER_REST_ANGLE);
-  from = rig.lines.size();
-  rig.pad.send = false;
-  CHECK(rig.runUntil([&] { return rig.state() == DS_STATE_PAIRING; }, LINK_TIMEOUT_MS * 2));
-  rig.flush();
-  CHECK(!teaching(rig));
-  CHECK_EQ(hal_host::storeSaves(), 0u);
-  CHECK_EQ(countExact(rig, "servo adjust: not saved (link lost): " + restFire(rest, TRIGGER_FIRE_ANGLE) +
-                               " stay for this run only", from), (size_t)1);
-  CHECK(anglesInForce(rig, rest, TRIGGER_FIRE_ANGLE));
-  servostore::Angles none;
-  CHECK(storedAngles(none) == servostore::Load::BLANK);
-  rig.pad.send = true;
-  CHECK(rig.runUntil([&] { return rig.state() == DS_STATE_DISARMED; }, LINK_TIMEOUT_MS * 2));
-  CHECK(found(rig.shell("status"), "rest=" + std::to_string(rest) + " fire=" + std::to_string(TRIGGER_FIRE_ANGLE) +
-                                       " (not saved)"));
-  // Back in, and Menu while the stick moves the turret: refused, still in adjust mode, nothing
-  // written; the shell's servo off too.
-  CHECK(toTeach(rig));
-  rig.pad.rx = kStickMax;
-  rig.runMs(MS_PER_S / 4);
-  CHECK(rig.motion().isMoving());
-  from = rig.lines.size();
-  rig.press(DS_BTN_START);
-  CHECK(found(rig.shell("servo off"), "servo off: refused: turret moving"));
-  rig.flush();
-  CHECK_EQ(rig.countLines("Menu (save and leave servo adjust): refused: turret moving", from), (size_t)1);
-  CHECK(teaching(rig));
-  CHECK_EQ(hal_host::storeSaves(), 0u);
-  rig.pad.rx = 0;
-  CHECK(rig.runUntil([&] { return !rig.motion().isMoving(); }, MS_PER_S * 2));
-  // Menu mid test stroke: the stroke is aborted (servo to REST), then the record is written.
-  rig.pad.buttons = DS_BTN_X;
-  CHECK(rig.runUntil([&] { return rig.trigger().phase() == Trigger::Phase::HOLD_FIRE; }, kStrokeMs * 2));
-  rig.pad.buttons = 0;
-  const uint8_t ammo = rig.trigger().ammo();
-  bool savedMidStroke = false, savedOffDisarmed = false;
-  uint32_t savesSeen = 0;
-  rig.everyLoop = [&] {   // after each loop that wrote, the stroke was already over, still DISARMED
-    if (hal_host::storeSaves() == savesSeen) return;
-    savesSeen = hal_host::storeSaves();
-    savedMidStroke = savedMidStroke || rig.trigger().strokeActive();
-    savedOffDisarmed = savedOffDisarmed || rig.state() != DS_STATE_DISARMED;
-  };
-  from = rig.lines.size();
-  const uint32_t losses = rig.app->turret().status().linkLosses;
-  rig.pad.buttons = DS_BTN_START;
-  CHECK(rig.runUntil([&] { return !teaching(rig); }, kCtrlMs * 3));
-  rig.pad.buttons = 0;
-  rig.runMs(BUTTON_DEBOUNCE_MS + LINK_TIMEOUT_MS * 2);   // the 50 ms block costs no link loss
-  rig.everyLoop();
-  rig.everyLoop = nullptr;
-  rig.flush();
-  CHECK_EQ(hal_host::storeSaves(), 1u);
-  CHECK(!savedMidStroke && !savedOffDisarmed);
-  CHECK(!rig.trigger().strokeActive());
-  CHECK_EQ(servoNow(), rest);
-  CHECK_EQ(rig.trigger().ammo(), ammo);
-  CHECK(storeHolds(rest, TRIGGER_FIRE_ANGLE));
-  CHECK_EQ(rig.countLines(savedPrefix(rest, TRIGGER_FIRE_ANGLE) +
-                              std::to_string(hal_host::kStoreSaveTypicalUs / US_PER_MS) + " ms", from), (size_t)1);
-  CHECK_EQ(countExact(rig, summaryLine(rest, TRIGGER_FIRE_ANGLE), from), (size_t)1);
-  CHECK_EQ(rig.app->turret().status().linkLosses, losses);
-  CHECK_EQ(rig.state(), (uint8_t)DS_STATE_DISARMED);
-  CHECK_EQ(blockingWrites(), 0u);
-  // Saved now: in and out again writes nothing.
-  CHECK(toTeach(rig));
-  rig.press(DS_BTN_START);
-  CHECK_EQ(hal_host::storeSaves(), 1u);
-  CHECK(found(rig.shell("status"), " (saved)"));
-}
-
-// View in adjust mode: config.h's REST and FIRE in force at once (the servo to that REST, LCD row 1,
-// the log), and Menu then saves them over the stored record. Outside adjust mode View does nothing.
-TEST(servo_adjust_view_restores_config_angles_and_menu_saves_them) {
-  hal_host::reset();
-  storeRecord(kSavedRest, kSavedFire);
-  Rig rig(App::defaults(), true, false, true);
-  CHECK(rig.toDisarmed());
-  rig.flush();
-  size_t from = rig.lines.size();
-  const uint32_t refusals = rig.app->turret().status().refusals;
-  rig.press(DS_BTN_BACK);                          // DISARMED, not adjusting: nothing at all
-  rig.flush();
-  CHECK_EQ(rig.lines.size(), from);
-  CHECK_EQ(rig.app->turret().status().refusals, refusals);
-  CHECK(anglesInForce(rig, kSavedRest, kSavedFire));
-  CHECK(toTeach(rig));
-  CHECK_EQ(servoNow(), clampTeach(kSavedRest));
-  from = rig.lines.size();
-  rig.press(DS_BTN_BACK);
-  rig.flush();
-  CHECK(anglesInForce(rig, TRIGGER_REST_ANGLE, TRIGGER_FIRE_ANGLE));
-  CHECK_EQ(servoNow(), clampTeach(TRIGGER_REST_ANGLE));
-  CHECK_EQ(countExact(rig, "servo adjust: config.h angles restored: " + restFire(TRIGGER_REST_ANGLE, TRIGGER_FIRE_ANGLE) +
-                               " (Menu saves them)", from), (size_t)1);
-  rig.runMs(LCD_REFRESH_MS * 4);
-  CHECK_EQ(rig.lcd(1), teachRow1(std::to_string(TRIGGER_REST_ANGLE), std::to_string(TRIGGER_FIRE_ANGLE)));
-  CHECK(teaching(rig));
-  CHECK(storeHolds(kSavedRest, kSavedFire));       // View alone writes nothing
-  from = rig.lines.size();
-  rig.press(DS_BTN_START);
-  rig.flush();
-  CHECK_EQ(hal_host::storeSaves(), 1u);
-  CHECK(storeHolds(TRIGGER_REST_ANGLE, TRIGGER_FIRE_ANGLE));
-  CHECK_EQ(rig.countLines(savedPrefix(TRIGGER_REST_ANGLE, TRIGGER_FIRE_ANGLE), from), (size_t)1);
-  CHECK(found(rig.shell("status"), " (saved)"));
-}
-
-// Saved angles survive a reboot of the board (a new App on the same store) and the power toggle's
-// OFF -> BOOT; angles changed but not saved are dropped by both.
-TEST(servo_adjust_saved_angles_survive_a_reboot_and_unsaved_ones_do_not) {
-  {
-    Rig rig;
-    CHECK(toTeach(rig));
-    CHECK(found(rig.shell("servo " + std::to_string(kSavedRest)), ": ok"));
-    rig.press(DS_BTN_A);
-    CHECK(found(rig.shell("servo " + std::to_string(kSavedFire)), ": ok"));
-    rig.press(DS_BTN_B);
-    rig.press(DS_BTN_START);
-    CHECK_EQ(hal_host::storeSaves(), 1u);
-    CHECK(storeHolds(kSavedRest, kSavedFire));
-  }
-  {
-    Rig rig(App::defaults(), true, false, true);   // the board reboots
-    rig.flush();
-    CHECK_EQ(countExact(rig, loadedLine(kSavedRest, kSavedFire)), (size_t)1);
-    CHECK(anglesInForce(rig, kSavedRest, kSavedFire));
-    CHECK_EQ(servoNow(), kSavedRest);
-    // Changed in adjust mode, left by the power toggle: not saved, and the toggle's reboot is back
-    // on the saved angles.
-    CHECK(toTeach(rig));
-    rig.press(kAwayLarge);
-    rig.press(DS_BTN_A);
-    const int32_t unsaved = servoNow();
-    CHECK(unsaved != kSavedRest);
-    rig.pad = Pad();
-    rig.setPower(false);
-    CHECK(rig.runUntil([&] { return rig.state() == DS_STATE_OFF; }, TOGGLE_DEBOUNCE_MS + kCtrlMs));
-    CHECK(anglesInForce(rig, kSavedRest, kSavedFire));
-    rig.setPower(true);
-    CHECK(rig.toDisarmed());
-    CHECK(anglesInForce(rig, kSavedRest, kSavedFire));
-    CHECK_EQ(servoNow(), kSavedRest);
-    CHECK_EQ(hal_host::storeSaves(), 0u);
-    // Changed again, left by a link loss (RAM only), then the board reboots: the saved angles.
-    CHECK(toTeach(rig));
-    rig.press(kAwayLarge);
-    rig.press(DS_BTN_B);
-    rig.pad.send = false;
-    CHECK(rig.runUntil([&] { return rig.state() == DS_STATE_PAIRING; }, LINK_TIMEOUT_MS * 2));
-    CHECK(!anglesInForce(rig, kSavedRest, kSavedFire));
-  }
-  {
-    Rig rig(App::defaults(), true, false, true);
-    CHECK(anglesInForce(rig, kSavedRest, kSavedFire));
-    CHECK(storeHolds(kSavedRest, kSavedFire));
-  }
-}
-
-// A save whose read-back fails (worn flash): logged, counted, the angles stay in force for this run
-// and the store's next boot is not trusted with them.
-TEST(servo_adjust_failed_save_keeps_the_angles_for_this_run_only) {
-  Rig rig;
-  hal_host::failStoreSaves(true);
-  CHECK(toTeach(rig));
-  rig.press(kAwaySmall);
-  rig.press(DS_BTN_A);
-  const int32_t rest = servoNow();
-  const size_t from = rig.lines.size();
-  rig.press(DS_BTN_START);
-  rig.flush();
-  CHECK(!teaching(rig));
-  CHECK_EQ(countExact(rig, "servo adjust: save FAILED (data flash read-back), " + restFire(rest, TRIGGER_FIRE_ANGLE) +
-                               " stay for this run only", from), (size_t)1);
-  CHECK_EQ(rig.app->turret().status().saveFailures, 1u);
-  CHECK(anglesInForce(rig, rest, TRIGGER_FIRE_ANGLE));
-  CHECK(found(rig.shell("status"), " (not saved)"));
-  hal_host::failStoreSaves(false);
-  Rig again(App::defaults(), true, false, true);
-  CHECK(anglesInForce(again, TRIGGER_REST_ANGLE, TRIGGER_FIRE_ANGLE));
 }
 
 TESTKIT_MAIN()

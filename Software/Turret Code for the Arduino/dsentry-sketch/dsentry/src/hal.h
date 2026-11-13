@@ -7,10 +7,8 @@
 // Every other module includes this header and nothing from Arduino (architecture.md rule 4).
 //
 // Rules the implementations keep, so callers never have to think about them:
-//   - nothing here blocks except begin() and storeSave(); every other call from loop() returns
-//     in microseconds (lcdWriteAt ~0.5 ms for its one I2C transaction, readAnalog ~10 us).
-//     storeSave() is the one documented blocking call (about 50 ms, see below), made only by
-//     SERVO ADJUST's save in DISARMED with no stroke running and no axis moving;
+//   - nothing here blocks except begin(); every call from loop() returns in microseconds
+//     (lcdWriteAt ~0.5 ms for its one I2C transaction, readAnalog ~10 us);
 //   - serial output is queued and paced by service(); a message that does not fit its queue
 //     is dropped whole and counted, never split and never waited for;
 //   - steppers run from timer interrupts; the API sets rates, bounds and positions only.
@@ -139,19 +137,5 @@ bool linkWrite(const uint8_t* data, size_t len); // all or nothing, like usbWrit
 bool linkTxIdle();                               // queue empty and the UART has sent it all
 size_t linkTxFree();
 uint32_t linkTxDropped();
-
-// ---- settings store (the RA4M1's data flash through the core's EEPROM library) ------------------------
-// n bytes at SETTINGS_STORE_ADDR, n at most SETTINGS_STORE_MAX_BYTES (more: false, nothing done).
-// Survives power off and resets. Erased (blank) flash reads 0xFF.
-// storeLoad: copies the bytes into dst; a few microseconds a byte (setup() or a rare command).
-bool storeLoad(void* dst, size_t n);
-// storeSave: writes the bytes and reads them back; true only when the read-back matches.
-// BLOCKS: the core erases the store's 1 KB block (when a stored byte changes) and programs all
-// 1 KB of it, about 50 ms typical at the UNO R4's 24 MHz flash clock (RA4M1 datasheet table 2.73:
-// 1 KB erase 6.4-9.0 ms, 1 byte 42-52 us x 1024; no erase on a blank block); the datasheet maximum
-// is 0.6-0.75 s, more than LINK_TIMEOUT_MS. Interrupts stay enabled (code flash stays readable while the
-// data flash programs), so the step timers, the servo PWM and the UART receive rings keep running;
-// loop() does not (no planner, no hal::service(), no link polls). Callers: SERVO ADJUST only.
-bool storeSave(const void* src, size_t n);
 
 }  // namespace hal

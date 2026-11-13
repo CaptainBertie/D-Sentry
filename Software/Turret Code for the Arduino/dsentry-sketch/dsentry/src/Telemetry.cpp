@@ -149,6 +149,8 @@ void Telemetry::collect(uint32_t nowMs, TelemetrySnapshot& out) const {
     out.state = src_.turret->state();
     out.fault = src_.turret->fault();
     out.emptyMagBlink = src_.turret->display().emptyMagBlink;   // what the LEDs show
+  } else if (src_.trigger) {
+    out.emptyMagBlink = src_.trigger->emptyMagIndicator();
   }
   if (src_.trigger) {
     out.fireMode = src_.trigger->fireMode();

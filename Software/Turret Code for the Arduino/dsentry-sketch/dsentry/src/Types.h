@@ -118,18 +118,22 @@ struct DisplayModel {
   uint8_t radioMode = DS_RADIO_BLE;       // DS_RADIO_* from the A1 toggle (LCD mode label)
   uint8_t ammo = 0;                       // darts left
   bool linkConnected = false;             // a control source is connected
-  bool fireReady = false;                 // ARMED red (else yellow): a pull would fire now
-                                          // (Trigger::fireReady: every gate open and the last
-                                          // shot's LED_FIRE_FLASH_MIN_MS hold over)
-  bool emptyMagBlink = false;             // the empty-magazine purple double flash: ammo 0 in
-                                          // DISARMED or ARMED, not in SERVO ADJUST, until X
+  bool firing = false;                    // FIRING red: a stroke is running or its
+                                          // LED_FIRE_FLASH_MIN_MS hold has not ended
+  bool emptyMagBlink = false;             // ARMED, ammo 0, lockout on, trigger pulled
   PairingPhase pairing = PairingPhase::FROM_BOOT;  // meaningful in DS_STATE_PAIRING
   uint32_t stateSinceMs = 0;              // hal::nowMs() when `state` was entered
-  // SERVO ADJUST (TurretState.h; only ever true in DS_STATE_DISARMED):
-  bool servoTeach = false;                // adjust rows on the LCD, LED_COLOR_SERVO_ADJUST
+  // SERVO TEACH (TurretState.h; only ever true in DS_STATE_DISARMED):
+  bool servoTeach = false;                // teach rows on the LCD, LED_COLOR_SERVO_TEACH
   int16_t servoDeg = 0;                   // the angle the trigger servo is commanded to, whole deg
+  bool restRecorded = false;              // REST recorded this power-on ("R<n>", else "R-")
   int16_t restDeg = 0;                    // the REST angle strokes use now, whole degrees
+  bool fireRecorded = false;              // FIRE recorded this power-on
   int16_t fireDeg = 0;                    // the FIRE angle strokes use now, whole degrees
+  bool prefireRecorded = false;           // PRE-FIRE recorded this power-on
+  int16_t prefireDeg = 0;                 // the PRE-FIRE angle strokes use now, whole degrees
+  bool clearRecorded = false;             // CLEAR recorded this power-on
+  int16_t clearDeg = 0;                   // the CLEAR angle strokes use now, whole degrees
 };
 
 // One LED colour as the LED hardware receives it (after Leds' brightness clamp).

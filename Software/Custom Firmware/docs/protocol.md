@@ -406,7 +406,7 @@ ControlPacket.flags. 8 bits, C prefix `DS_CTRL_FLAG_`.
 
 ### Buttons
 
-ControlPacket.buttons and TelemetryPacket.padButtons (spec 3.2 mapping: A arm, B semi/full, X magazine, d-pad left set home, d-pad down go home; Menu enters SERVO ADJUST from DISARMED, where d-pad up/down, RB/LB, A, B, View and X set the trigger servo angles instead and Menu saves and leaves, TurretState.h). Bits 12-15 exist for the dashboard's controller view: a ControlPacket may carry them and the RA4M1 never acts on them. 16 bits, C prefix `DS_BTN_`.
+ControlPacket.buttons and TelemetryPacket.padButtons (spec 3.2 mapping: A arm, B semi/full, X magazine, d-pad left set home, d-pad down go home). Bits 12-15 exist for the dashboard's controller view: a ControlPacket may carry them and the RA4M1 never acts on them. 16 bits, C prefix `DS_BTN_`.
 
 | Bit | Mask | Key | C macro | Meaning |
 |---|---|---|---|---|
@@ -420,8 +420,8 @@ ControlPacket.buttons and TelemetryPacket.padButtons (spec 3.2 mapping: A arm, B
 | 7 | `0x0080` | `dpadDown` | `DS_BTN_DPAD_DOWN` | d-pad down: go home |
 | 8 | `0x0100` | `dpadLeft` | `DS_BTN_DPAD_LEFT` | d-pad left: set home |
 | 9 | `0x0200` | `dpadRight` | `DS_BTN_DPAD_RIGHT` | d-pad right: unused |
-| 10 | `0x0400` | `start` | `DS_BTN_START` | Menu (start): servo adjust when DISARMED (enter / save and leave) |
-| 11 | `0x0800` | `back` | `DS_BTN_BACK` | View (back): in servo adjust, config.h's REST / FIRE back in force; else unused |
+| 10 | `0x0400` | `start` | `DS_BTN_START` | Menu (start): unused |
+| 11 | `0x0800` | `back` | `DS_BTN_BACK` | View (back): unused |
 | 12 | `0x1000` | `lsClick` | `DS_BTN_LS_CLICK` | left stick click: shown on the dashboard, no turret action |
 | 13 | `0x2000` | `rsClick` | `DS_BTN_RS_CLICK` | right stick click: shown, no turret action |
 | 14 | `0x4000` | `xbox` | `DS_BTN_XBOX` | Xbox (guide) button: shown, no turret action |
@@ -443,7 +443,7 @@ TelemetryPacket.flags. 16 bits, C prefix `DS_TELEM_FLAG_`.
 | 7 | `0x0080` | `powerToggleOn` | `DS_TELEM_FLAG_POWER_TOGGLE_ON` | power toggle (A0) reads on |
 | 8 | `0x0100` | `modeToggleWifi` | `DS_TELEM_FLAG_MODE_TOGGLE_WIFI` | mode toggle (A1) reads WiFi |
 | 9 | `0x0200` | `stallEnabled` | `DS_TELEM_FLAG_STALL_ENABLED` | stall detector active |
-| 10 | `0x0400` | `emptyMagBlink` | `DS_TELEM_FLAG_EMPTY_MAG_BLINK` | empty-magazine double flash showing (ammo 0, DISARMED/ARMED) |
+| 10 | `0x0400` | `emptyMagBlink` | `DS_TELEM_FLAG_EMPTY_MAG_BLINK` | empty-magazine blink showing |
 | 11 | `0x0800` | `driversEnabled` | `DS_TELEM_FLAG_DRIVERS_ENABLED` | stepper drivers enabled (EN low) |
 | 12 | `0x1000` | `espLegacyFirmware` | `DS_TELEM_FLAG_ESP_LEGACY_FIRMWARE` | the ESP32 answered `AT+DSCAPS?` with ERROR (old fork/stock) |
 | 13 | `0x2000` | `lcdPresent` | `DS_TELEM_FLAG_LCD_PRESENT` | an LCD answered on I2C |

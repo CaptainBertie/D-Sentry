@@ -1,7 +1,4 @@
-// test_leds.cpp -- Leds against spec 3.8, acceptance 11/12/16 and docs/architecture.md 3, 5, 6,
-// with the owner's scheme of 2026-11-03: ARMED red when a pull would fire now, yellow while the
-// next shot is not available; a purple double flash over the state colour at ammo 0; SERVO
-// TEACH cyan over it; FAULT over everything.
+// test_leds.cpp -- Leds against spec 3.8, acceptance 11/12/16 and docs/architecture.md 3, 5, 6.
 //
 // KEY SAFETY TEST: brightness_never_exceeds_limit_through_the_module drives the real module
 // through every state x fire mode x flag x fault x pairing phase over a whole pulse period and
@@ -50,22 +47,6 @@ DisplayModel model(uint8_t state, uint32_t sinceMs = 0) {
   return m;
 }
 
-// The empty-magazine double flash from config.h alone (not Leds::emptyFlashOn): within each
-// LED_EMPTY_FLASH_PERIOD_MS, purple for LED_EMPTY_FLASH_ON_MS, the colour underneath for
-// LED_EMPTY_FLASH_GAP_MS, purple again for LED_EMPTY_FLASH_ON_MS, then the colour underneath.
-bool purpleExpected(uint32_t sinceRiseMs) {
-  const uint32_t t = sinceRiseMs % LED_EMPTY_FLASH_PERIOD_MS;
-  if (t < LED_EMPTY_FLASH_ON_MS) return true;
-  if (t < LED_EMPTY_FLASH_ON_MS + LED_EMPTY_FLASH_GAP_MS) return false;
-  return t < 2u * LED_EMPTY_FLASH_ON_MS + LED_EMPTY_FLASH_GAP_MS;
-}
-
-// What ARMED / DISARMED show without the empty overlay.
-uint32_t stateColour(const DisplayModel& m) {
-  if (m.state == DS_STATE_DISARMED) return LED_COLOR_DISARMED;
-  return m.fireReady ? LED_COLOR_ARMED_READY : LED_COLOR_ARMED_WAIT;
-}
-
 struct Rig {
   Debug debug;
   Leds leds;
@@ -107,24 +88,20 @@ TEST(brightness_never_exceeds_limit_through_the_module) {
   const uint32_t stepMs = kFrameMs + 1;   // not a divisor of the pulse period: many phases
   uint32_t combos = 0;
   uint8_t worstShown = 0;
-  // The empty double flash's whole period too, so its purple frames are in the sweep.
-  const uint32_t sweepMs = std::max<uint32_t>(LED_PULSE_PERIOD_MS, LED_EMPTY_FLASH_PERIOD_MS);
   for (uint8_t state = 0; state <= DS_STATE_COUNT; state++) {   // DS_STATE_COUNT: not a state
     for (uint8_t fire = 0; fire < DS_FIRE_MODE_COUNT; fire++) {
-      for (uint8_t flags = 0; flags < 16; flags++) {
+      for (uint8_t flags = 0; flags < 8; flags++) {
         for (uint8_t fault : faults) {
           for (PairingPhase phase : phases) {
             DisplayModel m = model(state, hal::nowMs());
             m.fireMode = fire;
-            m.fireReady = flags & 1;
+            m.firing = flags & 1;
             m.emptyMagBlink = flags & 2;
             m.linkConnected = flags & 4;
-            m.servoTeach = flags & 8;
-            m.ammo = m.emptyMagBlink ? 0 : MAG_CAPACITY;
             m.fault = fault;
             m.pairing = phase;
             combos++;
-            for (uint32_t t = 0; t <= sweepMs; t += stepMs) {
+            for (uint32_t t = 0; t <= LED_PULSE_PERIOD_MS; t += stepMs) {
               rig.step((uint64_t)stepMs * US_PER_MS, m);
               const Rgb c = hal_host::ledShown(0);
               worstShown = std::max(worstShown, std::max(c.r, std::max(c.g, c.b)));
@@ -134,7 +111,7 @@ TEST(brightness_never_exceeds_limit_through_the_module) {
       }
     }
   }
-  CHECK_EQ(combos, (DS_STATE_COUNT + 1u) * DS_FIRE_MODE_COUNT * 16u * 3u * 3u);
+  CHECK_EQ(combos, (DS_STATE_COUNT + 1u) * DS_FIRE_MODE_COUNT * 8u * 3u * 3u);
   CHECK(hal_host::ledMaxChannel() <= LED_MAX_BRIGHTNESS);   // raw bytes given to the HAL
   CHECK_EQ(hal_host::ledOverLimit(), 0u);                   // the HAL's guard never had to cut
   CHECK_EQ(rig.leds.overLimit(), 0u);                       // nor Leds' own runtime check
@@ -144,57 +121,46 @@ TEST(brightness_never_exceeds_limit_through_the_module) {
   CHECK_EQ(worstShown, LED_MAX_BRIGHTNESS);
 }
 
-// ---- priorities (owner 2026-11-03), swept over every state, flag and many timestamps --------------------
-// FAULT blink > SERVO ADJUST cyan > EMPTY purple double flash (over the state colour) > state colour.
+// ---- priorities (spec 3.8), swept over every state, flag and many timestamps -------------------------------
 TEST(priority_rules_hold_for_every_state_flag_and_time) {
   const Rgb fault = rgbOf(LED_COLOR_FAULT);
-  const Rgb teach = rgbOf(LED_COLOR_SERVO_ADJUST);
-  const Rgb purple = rgbOf(LED_COLOR_EMPTY_MAG);
+  const Rgb firing = rgbOf(LED_COLOR_FIRING);
+  const Rgb empty = rgbOf(LED_COLOR_EMPTY_MAG);
   const Rgb startup = rgbOf(LED_COLOR_STARTUP);
-  // stateSinceMs values on both sides of the millis() wrap; the empty flag rose a little later
+  // stateSinceMs values on both sides of the millis() wrap
   const uint32_t sinces[] = {0u, 12345u, UINT32_MAX - LED_PULSE_PERIOD_MS / 2u};
-  const uint32_t riseAfter = LED_EMPTY_FLASH_PERIOD_MS / 3u;
-  uint32_t samples = 0, purpleSeen = 0, underneathSeen = 0;
+  uint32_t samples = 0;
   for (uint8_t state = 0; state <= DS_STATE_COUNT; state++) {
     for (uint8_t fire = 0; fire < DS_FIRE_MODE_COUNT; fire++) {
-      for (uint8_t flags = 0; flags < 8; flags++) {
+      for (uint8_t flags = 0; flags < 4; flags++) {
         for (uint32_t since : sinces) {
           DisplayModel m = model(state, since);
           m.fireMode = fire;
-          m.fireReady = flags & 1;
+          m.firing = flags & 1;
           m.emptyMagBlink = flags & 2;
-          m.servoTeach = flags & 4;
-          m.ammo = m.emptyMagBlink ? 0 : MAG_CAPACITY;
           m.fault = DS_FAULT_STALL;
-          const uint32_t rose = since + riseAfter;
-          const uint32_t span = 2u * std::max<uint32_t>(LED_PULSE_PERIOD_MS, LED_EMPTY_FLASH_PERIOD_MS);
-          for (uint32_t t = 0; t < span; t += 3) {
+          for (uint32_t t = 0; t < 2 * LED_PULSE_PERIOD_MS; t += 3) {
             const uint32_t now = since + t;
-            const Rgb c = Leds::colorFor(m, now, rose);
+            const Rgb c = Leds::colorFor(m, now, since);
             samples++;
-            const bool control = state == DS_STATE_DISARMED || state == DS_STATE_ARMED;
             if (state == DS_STATE_OFF) {
               if (!CHECK(dark(c))) return;                      // OFF is dark, whatever the flags
             } else if (state == DS_STATE_FAULT) {
-              if (!CHECK(same(c, fault) || dark(c))) return;    // FAULT beats TEACH and EMPTY
-            } else if (m.servoTeach && state == DS_STATE_DISARMED) {
-              if (!CHECK(same(c, teach))) return;               // TEACH beats EMPTY, solid
-            } else if (m.emptyMagBlink && control && purpleExpected(now - rose)) {
-              if (!CHECK(same(c, purple))) return;              // a flash: purple
-              purpleSeen++;
+              if (!CHECK(same(c, fault) || dark(c))) return;    // FAULT beats FIRING and EMPTY
+            } else if (m.firing) {
+              if (!CHECK(same(c, firing))) return;              // FIRING beats EMPTY_MAG
+            } else if (m.emptyMagBlink) {
+              if (!CHECK(same(c, empty) || dark(c))) return;    // EMPTY beats the state colour
             } else if (state == DS_STATE_BOOT || state == DS_STATE_CALIBRATING) {
-              // pulse: never above the colour, never below its floor (never fully dark); the
-              // empty flag shows nothing outside DISARMED / ARMED
+              // pulse: never above the colour, never below its floor (never fully dark)
               const float floorR = (float)startup.r * LED_PULSE_MIN_FRACTION;
               if (!CHECK(c.r <= startup.r && c.r + 1.0f >= floorR)) return;
               if (!CHECK(c.r == c.g && c.g == c.b)) return;     // white stays white
-            } else if (state == DS_STATE_PAIRING) {
-              if (!CHECK(!same(c, purple) && !same(c, teach))) return;
-            } else if (control) {
-              // the state colour, between the flashes too: green, or ARMED red (ready) / yellow
-              // (wait), whatever the fire mode
-              if (!CHECK(same(c, rgbOf(stateColour(m))))) return;
-              if (m.emptyMagBlink) underneathSeen++;
+            } else if (state == DS_STATE_DISARMED) {
+              if (!CHECK(same(c, rgbOf(LED_COLOR_DISARMED)))) return;
+            } else if (state == DS_STATE_ARMED) {
+              const uint32_t want = fire == DS_FIRE_MODE_FULL ? LED_COLOR_ARMED_FULL : LED_COLOR_ARMED_SEMI;
+              if (!CHECK(same(c, rgbOf(want)))) return;
             } else if (state == DS_STATE_COUNT) {
               if (!CHECK(dark(c))) return;                      // not a state: dark
             }
@@ -204,43 +170,37 @@ TEST(priority_rules_hold_for_every_state_flag_and_time) {
     }
   }
   CHECK(samples > 100000u);
-  CHECK(purpleSeen > 0u);
-  CHECK(underneathSeen > purpleSeen);   // most of each period is the colour underneath
 }
 
-TEST(fault_blink_is_hard_on_off_starting_on_and_beats_everything) {
+TEST(fault_blink_is_hard_on_off_starting_on) {
   DisplayModel m = model(DS_STATE_FAULT, 1000);
-  m.fireReady = true;       // FAULT still wins: the off phase is dark, never another colour
-  m.emptyMagBlink = true;
-  m.ammo = 0;
-  m.servoTeach = true;
+  m.firing = true;   // FAULT still wins: the off phase is dark, not red-for-firing
   const Rgb fault = rgbOf(LED_COLOR_FAULT);
-  CHECK(same(Leds::colorFor(m, 1000, 1000), fault));
-  CHECK(same(Leds::colorFor(m, 1000 + LED_FAULT_BLINK_MS - 1, 1000), fault));
-  CHECK(dark(Leds::colorFor(m, 1000 + LED_FAULT_BLINK_MS, 1000)));
-  CHECK(dark(Leds::colorFor(m, 1000 + 2 * LED_FAULT_BLINK_MS - 1, 1000)));
-  CHECK(same(Leds::colorFor(m, 1000 + 2 * LED_FAULT_BLINK_MS, 1000), fault));
-  for (uint32_t t = 0; t < 2 * LED_EMPTY_FLASH_PERIOD_MS; t++) {
-    const Rgb c = Leds::colorFor(m, 1000 + t, 1000);
-    if (!CHECK(same(c, fault) || dark(c))) return;
+  CHECK(same(Leds::colorFor(m, 1000, 0), fault));
+  CHECK(same(Leds::colorFor(m, 1000 + LED_FAULT_BLINK_MS - 1, 0), fault));
+  CHECK(dark(Leds::colorFor(m, 1000 + LED_FAULT_BLINK_MS, 0)));
+  CHECK(dark(Leds::colorFor(m, 1000 + 2 * LED_FAULT_BLINK_MS - 1, 0)));
+  CHECK(same(Leds::colorFor(m, 1000 + 2 * LED_FAULT_BLINK_MS, 0), fault));
+}
+
+TEST(firing_red_beats_empty_mag_and_state_colour) {
+  for (uint8_t state : {DS_STATE_BOOT, DS_STATE_CALIBRATING, DS_STATE_PAIRING, DS_STATE_DISARMED,
+                        DS_STATE_ARMED}) {
+    DisplayModel m = model(state, 0);
+    m.firing = true;
+    m.emptyMagBlink = true;
+    for (uint32_t t = 0; t < 4 * LED_FAULT_BLINK_MS; t += LED_FAULT_BLINK_MS / 2)
+      CHECK(same(Leds::colorFor(m, t, 0), rgbOf(LED_COLOR_FIRING)));
   }
 }
 
-// ARMED: red when a pull would fire now, yellow while the next shot is not available; the fire
-// mode is not shown (the LCD's ARMED S / F is).
 TEST(state_colours_match_config) {
   CHECK(same(Leds::colorFor(model(DS_STATE_DISARMED), 0, 0), rgbOf(LED_COLOR_DISARMED)));
-  for (uint8_t fire = 0; fire < DS_FIRE_MODE_COUNT; fire++) {
-    DisplayModel armed = model(DS_STATE_ARMED);
-    armed.fireMode = fire;
-    armed.fireReady = true;
-    CHECK(same(Leds::colorFor(armed, 0, 0), rgbOf(LED_COLOR_ARMED_READY)));
-    armed.fireReady = false;
-    CHECK(same(Leds::colorFor(armed, 0, 0), rgbOf(LED_COLOR_ARMED_WAIT)));
-  }
-  DisplayModel disarmed = model(DS_STATE_DISARMED);
-  disarmed.fireReady = true;   // meaningless outside ARMED
-  CHECK(same(Leds::colorFor(disarmed, 0, 0), rgbOf(LED_COLOR_DISARMED)));
+  DisplayModel armed = model(DS_STATE_ARMED);
+  armed.fireMode = DS_FIRE_MODE_SEMI;
+  CHECK(same(Leds::colorFor(armed, 0, 0), rgbOf(LED_COLOR_ARMED_SEMI)));
+  armed.fireMode = DS_FIRE_MODE_FULL;
+  CHECK(same(Leds::colorFor(armed, 0, 0), rgbOf(LED_COLOR_ARMED_FULL)));
   CHECK(dark(Leds::colorFor(model(DS_STATE_OFF), 0, 0)));
   // PAIRING crossfade: colour A when entered, colour B half a period later, A again after one.
   const DisplayModel p = model(DS_STATE_PAIRING, 500);
@@ -305,166 +265,58 @@ TEST(pixel0_is_led0_as_sent_after_the_clamp) {
   DisplayModel m = model(DS_STATE_ARMED, 0);
   m.fireMode = DS_FIRE_MODE_FULL;
   for (uint32_t i = 0; i < 2 * kFrameMs; i++) rig.step(US_PER_MS, m);
-  Rgb p = rig.leds.pixel0();
-  CHECK(same(p, scaled(rgbOf(LED_COLOR_ARMED_WAIT))));
+  const Rgb p = rig.leds.pixel0();
+  CHECK(same(p, scaled(rgbOf(LED_COLOR_ARMED_FULL))));
   CHECK(same(p, hal_host::ledShown(0)));
-  if (LED_COLOR_ARMED_WAIT == 0xFFFF00 && LED_MAX_BRIGHTNESS == 127) {   // yellow at half
+  if (LED_COLOR_ARMED_FULL == 0xFF6000 && LED_MAX_BRIGHTNESS == 127) {
+    // the protocol_spec.py TelemetryPacket example (ledR 127, ledG 47, ledB 0)
     CHECK_EQ(p.r, 127);
-    CHECK_EQ(p.g, 127);
-    CHECK_EQ(p.b, 0);
-  }
-  m.fireReady = true;
-  for (uint32_t i = 0; i < 2 * kFrameMs; i++) rig.step(US_PER_MS, m);
-  p = rig.leds.pixel0();
-  CHECK(same(p, scaled(rgbOf(LED_COLOR_ARMED_READY))));
-  if (LED_COLOR_ARMED_READY == 0xFF0000 && LED_MAX_BRIGHTNESS == 127) {  // red at half
-    CHECK_EQ(p.r, 127);
-    CHECK_EQ(p.g, 0);
+    CHECK_EQ(p.g, 47);
     CHECK_EQ(p.b, 0);
   }
 }
 
-// The owner's purple 0x8000FF through the one brightness function: floor(128 * 127 / 255) = 63
-// red, 127 blue, on every LED.
-TEST(purple_reaches_the_leds_through_the_clamp) {
-  Rig rig;
-  DisplayModel m = model(DS_STATE_DISARMED, 0);
-  m.ammo = 0;
-  m.emptyMagBlink = true;
-  for (uint32_t i = 0; i <= kFrameMs; i++) rig.step(US_PER_MS, m);   // the first flash
-  const Rgb want = scaled(rgbOf(LED_COLOR_EMPTY_MAG));
-  for (uint8_t k = 0; k < LED_COUNT; k++) CHECK(same(hal_host::ledShown(k), want));
-  CHECK(want.r <= LED_MAX_BRIGHTNESS && want.g <= LED_MAX_BRIGHTNESS && want.b <= LED_MAX_BRIGHTNESS);
-  if (LED_COLOR_EMPTY_MAG == 0x8000FF && LED_MAX_BRIGHTNESS == 127) {
-    CHECK_EQ(want.r, 63);
-    CHECK_EQ(want.g, 0);
-    CHECK_EQ(want.b, 127);
-  }
-  CHECK_EQ(rig.leds.overLimit(), 0u);
-  CHECK(hal_host::ledMaxChannel() <= LED_MAX_BRIGHTNESS);
-}
-
-// TurretState holds fireReady false for a stroke and at least LED_FIRE_FLASH_MIN_MS; the LEDs
-// must turn yellow within one frame of it, stay yellow that long (to within one frame) on every
-// LED, then go back to red.
-TEST(armed_shows_yellow_while_not_ready_then_red_again) {
+TEST(a_stroke_shows_red_for_its_whole_flash_hold) {
+  // acceptance 11: TurretState holds `firing` for LED_FIRE_FLASH_MIN_MS; the LEDs must show red
+  // within one frame of it and for that long (to within one frame), on every LED.
   Rig rig;
   DisplayModel m = model(DS_STATE_ARMED, 0);
-  m.fireReady = true;
   for (uint32_t i = 0; i < 33; i++) rig.step(US_PER_MS, m);
-  const Rgb red = scaled(rgbOf(LED_COLOR_ARMED_READY));
-  const Rgb yellow = scaled(rgbOf(LED_COLOR_ARMED_WAIT));
-  CHECK(same(hal_host::ledShown(0), red));
+  const Rgb red = scaled(rgbOf(LED_COLOR_FIRING));
   const uint32_t start = hal::nowMs();
-  uint32_t firstYellow = 0, lastYellow = 0;
+  uint32_t firstRed = 0, lastRed = 0;
   for (uint32_t i = 0; i < 3 * LED_FIRE_FLASH_MIN_MS; i++) {
-    m.fireReady = hal::nowMs() - start >= LED_FIRE_FLASH_MIN_MS;
+    m.firing = hal::nowMs() - start < LED_FIRE_FLASH_MIN_MS;
     rig.step(US_PER_MS, m);
-    bool allYellow = true;
-    for (uint8_t k = 0; k < LED_COUNT; k++) allYellow = allYellow && same(hal_host::ledShown(k), yellow);
-    if (allYellow) {
-      if (!firstYellow) firstYellow = hal::nowMs();
-      lastYellow = hal::nowMs();
+    bool allRed = true;
+    for (uint8_t k = 0; k < LED_COUNT; k++) allRed = allRed && same(hal_host::ledShown(k), red);
+    if (allRed) {
+      if (!firstRed) firstRed = hal::nowMs();
+      lastRed = hal::nowMs();
     }
   }
-  CHECK(firstYellow > 0u);
-  CHECK(firstYellow - start <= kFrameMs + 1);
-  CHECK(lastYellow - firstYellow + 1 >= LED_FIRE_FLASH_MIN_MS - kFrameMs);
-  CHECK(lastYellow - start <= LED_FIRE_FLASH_MIN_MS + kFrameMs + 1);
-  CHECK(same(hal_host::ledShown(0), red));   // back to red
+  CHECK(firstRed > 0u);
+  CHECK(firstRed - start <= kFrameMs + 1);
+  CHECK(lastRed - firstRed + 1 >= LED_FIRE_FLASH_MIN_MS - kFrameMs);
+  CHECK(lastRed - start <= LED_FIRE_FLASH_MIN_MS + kFrameMs + 1);
+  CHECK(same(hal_host::ledShown(0), scaled(rgbOf(LED_COLOR_ARMED_SEMI))));   // back to yellow
 }
 
-// The double flash, millisecond by millisecond against config.h: purple, the colour underneath,
-// purple, the colour underneath, every LED_EMPTY_FLASH_PERIOD_MS from the rise; the colour
-// underneath is green (DISARMED), red (ARMED, ready) or yellow (ARMED, wait).
-TEST(empty_double_flash_timing_is_exact_with_the_state_colour_between) {
-  const Rgb purple = rgbOf(LED_COLOR_EMPTY_MAG);
-  struct Case {
-    uint8_t state;
-    bool ready;
-  };
-  const uint32_t rises[] = {0u, 777u, UINT32_MAX - LED_EMPTY_FLASH_PERIOD_MS / 2u};   // wrap too
-  for (const Case c : {Case{DS_STATE_DISARMED, false}, Case{DS_STATE_ARMED, true}, Case{DS_STATE_ARMED, false}}) {
-    for (uint32_t rose : rises) {
-      DisplayModel m = model(c.state, rose - LED_PULSE_PERIOD_MS);
-      m.fireReady = c.ready;
-      m.ammo = 0;
-      m.emptyMagBlink = true;
-      const Rgb under = rgbOf(stateColour(m));
-      uint32_t purpleMs = 0;
-      for (uint32_t t = 0; t < 3 * LED_EMPTY_FLASH_PERIOD_MS; t++) {
-        const Rgb got = Leds::colorFor(m, rose + t, rose);
-        const bool flash = purpleExpected(t);
-        if (!CHECK(same(got, flash ? purple : under))) return;
-        if (!CHECK_EQ(Leds::emptyFlashOn(t), flash)) return;
-        purpleMs += flash;
-      }
-      CHECK_EQ(purpleMs, 3u * 2u * LED_EMPTY_FLASH_ON_MS);   // two flashes a period, exactly
-    }
-  }
-  // The edges, spelled out.
-  CHECK(Leds::emptyFlashOn(0));
-  CHECK(Leds::emptyFlashOn(LED_EMPTY_FLASH_ON_MS - 1));
-  CHECK(!Leds::emptyFlashOn(LED_EMPTY_FLASH_ON_MS));
-  CHECK(!Leds::emptyFlashOn(LED_EMPTY_FLASH_ON_MS + LED_EMPTY_FLASH_GAP_MS - 1));
-  CHECK(Leds::emptyFlashOn(LED_EMPTY_FLASH_ON_MS + LED_EMPTY_FLASH_GAP_MS));
-  CHECK(Leds::emptyFlashOn(2 * LED_EMPTY_FLASH_ON_MS + LED_EMPTY_FLASH_GAP_MS - 1));
-  CHECK(!Leds::emptyFlashOn(2 * LED_EMPTY_FLASH_ON_MS + LED_EMPTY_FLASH_GAP_MS));
-  CHECK(!Leds::emptyFlashOn(LED_EMPTY_FLASH_PERIOD_MS - 1));
-  CHECK(Leds::emptyFlashOn(LED_EMPTY_FLASH_PERIOD_MS));
-  CHECK(2 * LED_EMPTY_FLASH_ON_MS + LED_EMPTY_FLASH_GAP_MS < LED_EMPTY_FLASH_PERIOD_MS);   // a pause
-}
-
-// Not in OFF, BOOT, CALIBRATING, PAIRING or FAULT, whatever the flag says.
-TEST(empty_flash_shows_only_in_disarmed_and_armed) {
-  const Rgb purple = rgbOf(LED_COLOR_EMPTY_MAG);
-  for (uint8_t state : {DS_STATE_OFF, DS_STATE_BOOT, DS_STATE_CALIBRATING, DS_STATE_PAIRING, DS_STATE_FAULT}) {
-    DisplayModel m = model(state, 0);
-    m.ammo = 0;
-    m.emptyMagBlink = true;
-    DisplayModel noFlag = m;
-    noFlag.emptyMagBlink = false;
-    for (uint32_t t = 0; t < 2 * LED_EMPTY_FLASH_PERIOD_MS; t += 7) {
-      const Rgb c = Leds::colorFor(m, t, 0);
-      if (!CHECK(same(c, Leds::colorFor(noFlag, t, 0)))) return;   // the flag changes nothing
-      if (!CHECK(!same(c, purple))) return;
-    }
-  }
-}
-
-// Through the module: the first flash comes within one frame of the rise (not waiting for a
-// global phase), the colour underneath shows in the gap and after the second flash.
-TEST(empty_flash_starts_on_when_the_flag_rises) {
+TEST(empty_mag_blink_starts_on_when_the_flag_rises) {
   Rig rig;
   DisplayModel m = model(DS_STATE_ARMED, 0);
-  m.fireReady = true;
   m.ammo = 0;
-  for (uint32_t i = 0; i < 77; i++) rig.step(US_PER_MS, m);   // an arbitrary phase
+  for (uint32_t i = 0; i < 77; i++) rig.step(US_PER_MS, m);   // an arbitrary blink phase
   m.emptyMagBlink = true;
   const uint32_t rose = hal::nowMs() + 1;
   const Rgb on = scaled(rgbOf(LED_COLOR_EMPTY_MAG));
-  const Rgb red = scaled(rgbOf(LED_COLOR_ARMED_READY));
+  // within one frame of the rise the LEDs are magenta, not waiting for a global blink phase
   for (uint32_t i = 0; i <= kFrameMs; i++) rig.step(US_PER_MS, m);
   CHECK(same(hal_host::ledShown(0), on));
-  // Every shown frame is purple exactly when the timeline says so (frames render on whole ms).
-  uint32_t purpleFrames = 0, redFrames = 0;
-  uint32_t lastShows = rig.leds.shows();
-  while (hal::nowMs() < rose + 2 * LED_EMPTY_FLASH_PERIOD_MS) {
-    rig.step(US_PER_MS, m);
-    if (rig.leds.shows() == lastShows) continue;
-    lastShows = rig.leds.shows();
-    const bool flash = purpleExpected(hal::nowMs() - rose);
-    if (!CHECK(same(hal_host::ledShown(0), flash ? on : red))) return;
-    (flash ? purpleFrames : redFrames)++;
-  }
-  CHECK(purpleFrames > 0u && redFrames > purpleFrames);
-  // X: the flag drops, the colour underneath stays.
-  m.emptyMagBlink = false;
-  m.ammo = MAG_CAPACITY;
-  for (uint32_t i = 0; i < LED_EMPTY_FLASH_PERIOD_MS; i++) {
-    rig.step(US_PER_MS, m);
-    if (i > kFrameMs && !CHECK(same(hal_host::ledShown(0), red))) return;
-  }
+  while (hal::nowMs() < rose + LED_FAULT_BLINK_MS + kFrameMs) rig.step(US_PER_MS, m);
+  CHECK(dark(hal_host::ledShown(0)));
+  while (hal::nowMs() < rose + 2 * LED_FAULT_BLINK_MS + kFrameMs) rig.step(US_PER_MS, m);
+  CHECK(same(hal_host::ledShown(0), on));
 }
 
 // ---- the step-quiet window (architecture.md 3) ------------------------------------------------------------
@@ -532,7 +384,7 @@ TEST(show_is_forced_after_max_defer_and_counted) {
   CHECK(shows >= MS_PER_S / (LED_SHOW_MAX_DEFER_MS + kFrameMs + 1));
   CHECK(shows <= MS_PER_S / LED_SHOW_MAX_DEFER_MS + 1);
   // the newest colours went out (frames kept rendering while waiting)
-  CHECK(same(hal_host::ledShown(0), scaled(rgbOf(LED_COLOR_ARMED_WAIT))));
+  CHECK(same(hal_host::ledShown(0), scaled(rgbOf(LED_COLOR_ARMED_SEMI))));
 }
 
 TEST(no_catch_up_burst_after_a_long_stall) {
@@ -555,29 +407,25 @@ TEST(begin_leaves_every_led_dark_and_shown) {
   CHECK(dark(rig.leds.pixel0()));
 }
 
-// ---- SERVO ADJUST colour (Leds.h) ---------------------------------------------------------------------
-// LED_COLOR_SERVO_ADJUST in DISARMED's adjust mode: below FAULT only, over the empty-magazine
-// flash (solid, every millisecond of its period), through the clamp.
-TEST(servo_adjust_colour_sits_below_fault_over_the_empty_flash_and_obeys_the_clamp) {
+// ---- SERVO TEACH colour (Leds.h) ---------------------------------------------------------------------
+// LED_COLOR_SERVO_TEACH in DISARMED's teach mode, below FAULT and FIRING, through the clamp.
+TEST(servo_teach_colour_sits_below_fault_and_firing_and_obeys_the_clamp) {
   DisplayModel m = model(DS_STATE_DISARMED);
   m.servoTeach = true;
-  CHECK(same(Leds::colorFor(m, 0, 0), rgbOf(LED_COLOR_SERVO_ADJUST)));
-  m.ammo = 0;
-  m.emptyMagBlink = true;              // never together from TurretState, but cyan would win
-  for (uint32_t t = 0; t < 2 * LED_EMPTY_FLASH_PERIOD_MS; t++)
-    if (!CHECK(same(Leds::colorFor(m, t, 0), rgbOf(LED_COLOR_SERVO_ADJUST)))) return;
+  CHECK(same(Leds::colorFor(m, 0, 0), rgbOf(LED_COLOR_SERVO_TEACH)));
+  m.firing = true;                     // a test stroke: red as a normal stroke
+  CHECK(same(Leds::colorFor(m, 0, 0), rgbOf(LED_COLOR_FIRING)));
+  m.firing = false;
   m.state = DS_STATE_FAULT;            // never together, but FAULT would win
   CHECK(same(Leds::colorFor(m, 0, 0), rgbOf(LED_COLOR_FAULT)));
-  m.emptyMagBlink = false;
-  m.ammo = MAG_CAPACITY;
   m.state = DS_STATE_ARMED;            // the flag means nothing outside DISARMED
-  CHECK(!same(Leds::colorFor(m, 0, 0), rgbOf(LED_COLOR_SERVO_ADJUST)) ||
-        LED_COLOR_SERVO_ADJUST == LED_COLOR_ARMED_WAIT);
+  CHECK(!same(Leds::colorFor(m, 0, 0), rgbOf(LED_COLOR_SERVO_TEACH)) ||
+        LED_COLOR_SERVO_TEACH == LED_COLOR_ARMED_SEMI);
   // Through the module: scaled, never above LED_MAX_BRIGHTNESS.
   Rig rig;
   m.state = DS_STATE_DISARMED;
   for (int k = 0; k < 4; k++) rig.step((uint64_t)kFrameMs * US_PER_MS, m);
-  CHECK(same(hal_host::ledShown(0), scaled(rgbOf(LED_COLOR_SERVO_ADJUST))));
+  CHECK(same(hal_host::ledShown(0), scaled(rgbOf(LED_COLOR_SERVO_TEACH))));
   CHECK(hal_host::ledMaxChannel() <= LED_MAX_BRIGHTNESS);
   CHECK_EQ(rig.leds.overLimit(), 0u);
 }

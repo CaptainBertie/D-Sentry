@@ -10,33 +10,35 @@
 #include "Flywheel.h"
 #include "Inputs.h"
 #include "Motion.h"
-#include "ServoStore.h"
 #include "StallDetector.h"
 #include "Trigger.h"
-#include "hal.h"
 
 static_assert(STALL_FAULT_HOLD_MS > 0, "STALL_FAULT_HOLD_MS must be positive");
 static_assert(STALL_BACKOFF_DEG >= 0.0f, "STALL_BACKOFF_DEG must not be negative");
+static_assert(TILT_BOOT_RAISE_DEG >= 0.0f && TILT_BOOT_RAISE_DEG <= TILT_RANGE_DEG,
+              "TILT_BOOT_RAISE_DEG must be inside the tilt range");
+static_assert(TILT_CAL_MAX_TRAVEL_DEG > TILT_RANGE_DEG + TILT_CAL_BACKOFF_DEG,
+              "TILT_CAL_MAX_TRAVEL_DEG must exceed the tilt range, or CAL_RAM may not reach the stop");
 static_assert(TILT_CAL_MODE == CAL_RAM || TILT_CAL_MODE == CAL_STALL_SENSE,
               "TILT_CAL_MODE must be CAL_RAM or CAL_STALL_SENSE");
-static_assert(SERVO_ADJUST_MIN_DEG >= 0 && SERVO_ADJUST_MAX_DEG <= SERVO_SPAN_DEG &&
-                  SERVO_ADJUST_MIN_DEG < SERVO_ADJUST_MAX_DEG,
-              "SERVO ADJUST range must be inside the servo's 0..SERVO_SPAN_DEG");
-static_assert(SERVO_ADJUST_STEP_SMALL_DEG > 0 && SERVO_ADJUST_STEP_LARGE_DEG > 0 &&
-                  SERVO_ADJUST_STEP_SMALL_DEG <= SERVO_ADJUST_MAX_DEG - SERVO_ADJUST_MIN_DEG &&
-                  SERVO_ADJUST_STEP_LARGE_DEG <= SERVO_ADJUST_MAX_DEG - SERVO_ADJUST_MIN_DEG,
-              "SERVO ADJUST steps must be positive and fit the adjust range");
+static_assert(SERVO_TEACH_MIN_DEG >= 0 && SERVO_TEACH_MAX_DEG <= SERVO_SPAN_DEG &&
+                  SERVO_TEACH_MIN_DEG < SERVO_TEACH_MAX_DEG,
+              "SERVO TEACH range must be inside the servo's 0..SERVO_SPAN_DEG");
+static_assert(SERVO_TEACH_STEP_SMALL_DEG > 0 && SERVO_TEACH_STEP_LARGE_DEG > 0 &&
+                  SERVO_TEACH_STEP_SMALL_DEG <= SERVO_TEACH_MAX_DEG - SERVO_TEACH_MIN_DEG &&
+                  SERVO_TEACH_STEP_LARGE_DEG <= SERVO_TEACH_MAX_DEG - SERVO_TEACH_MIN_DEG,
+              "SERVO TEACH steps must be positive and fit the teach range");
 
 namespace {
 
-// SERVO ADJUST log texts. The summary must fit one log line (uptime, a space, the text) at its
+// SERVO TEACH log texts. The summary must fit one log line (uptime, a space, the text) at its
 // widest, so the owner can paste both #define lines from one place.
-const char kTeachTag[] = "servo adjust: ";
+const char kTeachTag[] = "servo teach: ";
 const char kRestDefine[] = "#define TRIGGER_REST_ANGLE ";
 const char kFireDefine[] = "#define TRIGGER_FIRE_ANGLE ";
-const char kSummaryHead[] = "servo adjust: done; config.h lines: ";
-const char kRestWord[] = "REST ";
-const char kFireWord[] = " FIRE ";
+const char kPrefireDefine[] = "#define TRIGGER_PREFIRE_ANGLE ";
+const char kClearDefine[] = "#define TRIGGER_CLEAR_ANGLE ";
+const char kSummaryHead[] = "servo teach: done; config.h lines: ";
 const char kSummarySep[] = " / ";
 constexpr size_t textLen(size_t sizeofLiteral) { return sizeofLiteral - 1; }
 constexpr size_t digitsOf(uint32_t v) { return v < DEC_BASE ? 1 : 1 + digitsOf(v / DEC_BASE); }
@@ -45,13 +47,21 @@ constexpr size_t kSummaryMax = digitsOf(UINT32_MAX) + 1 + textLen(sizeof kSummar
                                textLen(sizeof kSummarySep) + textLen(sizeof kFireDefine) +
                                digitsOf(SERVO_SPAN_DEG);
 static_assert(kSummaryMax <= DEBUG_LOG_LINE_MAX,
-              "DEBUG_LOG_LINE_MAX is too short for the SERVO ADJUST summary line");
+              "DEBUG_LOG_LINE_MAX is too short for the SERVO TEACH summary line");
+constexpr size_t kSummary2Max = digitsOf(UINT32_MAX) + 1 + textLen(sizeof kSummaryHead) +
+                                textLen(sizeof kPrefireDefine) + digitsOf(SERVO_SPAN_DEG) +
+                                textLen(sizeof kSummarySep) + textLen(sizeof kClearDefine) +
+                                digitsOf(SERVO_SPAN_DEG);
+static_assert(kSummary2Max <= DEBUG_LOG_LINE_MAX,
+              "DEBUG_LOG_LINE_MAX is too short for the SERVO TEACH PRE-FIRE / CLEAR summary line");
+
+inline bool teachRange(float deg) { return deg >= (float)SERVO_TEACH_MIN_DEG && deg <= (float)SERVO_TEACH_MAX_DEG; }
 
 inline int16_t wholeDeg(float deg) { return (int16_t)lroundf(deg); }
 
 inline int32_t clampTeach(int32_t deg) {
-  if (deg < SERVO_ADJUST_MIN_DEG) return SERVO_ADJUST_MIN_DEG;
-  if (deg > SERVO_ADJUST_MAX_DEG) return SERVO_ADJUST_MAX_DEG;
+  if (deg < SERVO_TEACH_MIN_DEG) return SERVO_TEACH_MIN_DEG;
+  if (deg > SERVO_TEACH_MAX_DEG) return SERVO_TEACH_MAX_DEG;
   return deg;
 }
 
@@ -108,9 +118,12 @@ void TurretState::begin(Inputs& inputs, ControlLink& link, Motion& motion, Stall
   everConnected_ = false;
   flyLatch_ = false;
   teach_ = false;
-  menuThisTick_ = false;
-  saves_ = 0;
-  saveFailures_ = 0;
+  teachFly_ = false;
+  teachSwitchedThisTick_ = false;
+  restRecorded_ = false;
+  fireRecorded_ = false;
+  prefireRecorded_ = false;
+  clearRecorded_ = false;
   transitions_ = 0;
   linkLosses_ = 0;
   stalls_ = 0;
@@ -119,7 +132,6 @@ void TurretState::begin(Inputs& inputs, ControlLink& link, Motion& motion, Stall
   display_ = DisplayModel();
   link_->setWantMode(inputs_->radioMode());   // the radio the switch asks for, from the start
   wasConnected_ = link_->connected();
-  loadBootAngles();                // before the servo PWM resumes: it starts at their REST
   if (inputs_->powerOn()) {
     trigger_->setServoPower(true);
     enter(DS_STATE_BOOT, nowMs);
@@ -132,7 +144,7 @@ void TurretState::begin(Inputs& inputs, ControlLink& link, Motion& motion, Stall
 // ---- the loop ------------------------------------------------------------------------------------
 void TurretState::update(uint32_t nowMs) {
   lostThisTick_ = false;
-  menuThisTick_ = false;
+  teachSwitchedThisTick_ = false;
   forwardRumble();
 
   // The mode switch reaches ControlLink in every state (StatusPacket.wantMode mirrors it).
@@ -175,11 +187,13 @@ void TurretState::update(uint32_t nowMs) {
     case DS_STATE_CALIBRATING: {
       anyStateButtons();
       if (inputs_->pressed(DS_BTN_A)) refuse(CmdResult::REFUSED_STATE, "A (arm) while calibrating");
-      if (inputs_->pressed(DS_BTN_START))
-        refuse(CmdResult::REFUSED_STATE, "Menu (servo adjust) while calibrating");
+      if (inputs_->pressed(DS_BTN_Y)) refuse(CmdResult::REFUSED_STATE, "Y (servo teach) while calibrating");
       const Motion::CalStatus cal = motion_->calibrationStatus();
       if (cal == Motion::CalStatus::DONE) {
         debug_->log(LOG_STATE, "calibration done: tilt 0 = bottom stop + TILT_CAL_BACKOFF_DEG");
+        // Owner, 2026-11-04: lift the barrel off the panel to TILT_BOOT_RAISE_DEG after every
+        // calibration (a stick input in DISARMED takes over, as for go-home).
+        if (TILT_BOOT_RAISE_DEG > 0.0f) motion_->moveTo(AXIS_TILT, TILT_BOOT_RAISE_DEG);
         enter(DS_STATE_PAIRING, nowMs);
       } else if (cal != Motion::CalStatus::RUNNING) {
         Debug::Line l;
@@ -199,8 +213,7 @@ void TurretState::update(uint32_t nowMs) {
     case DS_STATE_FAULT:
       anyStateButtons();
       if (inputs_->pressed(DS_BTN_A)) refuse(CmdResult::REFUSED_STATE, "A (arm) in FAULT");
-      if (inputs_->pressed(DS_BTN_START))
-        refuse(CmdResult::REFUSED_STATE, "Menu (servo adjust) in FAULT");
+      if (inputs_->pressed(DS_BTN_Y)) refuse(CmdResult::REFUSED_STATE, "Y (servo teach) in FAULT");
       if (fault_ == DS_FAULT_STALL && elapsed(nowMs, faultSinceMs_, STALL_FAULT_HOLD_MS)) {
         fault_ = DS_FAULT_NONE;
         const bool toPairing = linkDroppedInFault_ || !connected;
@@ -217,25 +230,31 @@ void TurretState::update(uint32_t nowMs) {
 }
 
 void TurretState::controls(uint32_t nowMs) {
-  // Menu: SERVO ADJUST on (from DISARMED only) / save and off. A Menu press is the only button
-  // this update acts on, so a button pressed together with it is neither an adjust action nor its
-  // normal one, whether Menu switched the mode or was refused.
-  menuThisTick_ = inputs_->pressed(DS_BTN_START);   // decideFlywheel ignores LB in this frame too
-  if (menuThisTick_) {
+  // Y: SERVO TEACH on (from DISARMED only) / off. A press that switches the mode is the only
+  // button this update acts on, so a button pressed together with it is neither a teach action
+  // nor its normal one.
+  bool switched = false;
+  if (inputs_->pressed(DS_BTN_Y)) {
     if (teach_) {
-      const CmdResult r = saveAndLeaveTeach("Menu");
-      if (r != CmdResult::OK) refuse(r, "Menu (save and leave servo adjust)");
+      leaveTeach("Y");
+      switched = true;
     } else {
-      const CmdResult r = enterTeach(nowMs, "Menu");
-      if (r != CmdResult::OK) refuse(r, "Menu (servo adjust)");
+      const CmdResult r = enterTeach(nowMs, "Y");
+      if (r == CmdResult::OK)
+        switched = true;
+      else
+        refuse(r, "Y (servo teach)");
     }
-  } else if (teach_) {
-    teachButtons(nowMs);
-  } else {
-    normalButtons(nowMs);
+  }
+  teachSwitchedThisTick_ = switched;   // decideFlywheel ignores an LB press in this frame too
+  if (!switched) {
+    if (teach_)
+      teachButtons(nowMs);
+    else
+      normalButtons(nowMs);
   }
   // The stick: any deflection past the dead zone takes over (and so cancels a go-home or a
-  // shell move); a centred stick leaves a running position move alone. It aims in adjust mode too.
+  // shell move); a centred stick leaves a running position move alone. It aims in teach mode too.
   if (inputs_->stickActive() || !motion_->positionMoveActive())
     motion_->setVelocity(-inputs_->stickX(), inputs_->stickY());   // pan + = counter-clockwise
 }
@@ -257,6 +276,13 @@ void TurretState::normalButtons(uint32_t nowMs) {
         .add(motion_->homeDeg(AXIS_TILT), 1);
     debug_->log(LOG_STATE, l);
   }
+  // D-pad up in ARMED: the flywheel latch on / off (decideFlywheel spins them up with the normal
+  // ramp; a held LB keeps working, and releasing LB does not cut a latched wheel). Nothing in
+  // DISARMED.
+  if (inputs_->pressed(DS_BTN_DPAD_UP) && state_ == DS_STATE_ARMED) {
+    flyLatch_ = !flyLatch_;
+    debug_->log(LOG_STATE, flyLatch_ ? "flywheels latched on (d-pad up)" : "flywheel latch off (d-pad up)");
+  }
   if (inputs_->pressed(DS_BTN_DPAD_DOWN)) {
     if (motion_->goHome())
       debug_->log(LOG_STATE, "going home");
@@ -270,14 +296,19 @@ void TurretState::anyStateButtons() {
     trigger_->toggleFireMode();
     debug_->log(LOG_STATE, trigger_->fireMode() == DS_FIRE_MODE_FULL ? "fire mode full" : "fire mode semi");
   }
-  if (inputs_->pressed(DS_BTN_X)) {
-    trigger_->resetMagazine();
-    debug_->log(LOG_STATE, "magazine reset");
+  if (inputs_->pressed(DS_BTN_X)) {   // a toggle (owner, 2026-11-04): load, then unload
+    if (trigger_->ammo() > 0) {
+      trigger_->unloadMagazine();
+      debug_->log(LOG_STATE, "magazine unload: servo to REST");
+    } else {
+      trigger_->resetMagazine();
+      debug_->log(LOG_STATE, "magazine reset");
+    }
   }
 }
 
 bool TurretState::flywheelAllowed() const {
-  if (teach_) return false;   // SERVO ADJUST: never, whatever FLYWHEEL_REQUIRES_ARMED says
+  if (teach_) return false;   // SERVO TEACH: only its own d-pad-left toggle (decideFlywheel)
   return state_ == DS_STATE_ARMED || (state_ == DS_STATE_DISARMED && !cfg_.flywheelRequiresArmed);
 }
 
@@ -285,13 +316,21 @@ void TurretState::decideFlywheel(uint32_t nowMs) {
   // PAIRING keeps what the link loss left: cut by FAILSAFE_STOP_FLYWHEEL, or (with it false)
   // still spinning until the reconnection's DISARMED rules decide.
   if (state_ == DS_STATE_PAIRING) return;
+  if (teach_) {   // SERVO TEACH: d-pad left's toggle alone, whatever FLYWHEEL_REQUIRES_ARMED or LB say
+    flyLatch_ = false;
+    if (teachFly_ && !flywheel_->on())
+      flywheel_->setOn(true, nowMs);   // the normal ramp
+    else if (!teachFly_ && flywheel_->on())
+      flywheel_->cut();
+    return;
+  }
   if (!flywheelAllowed()) {
     if (flywheel_->on()) flywheel_->cut();
     flyLatch_ = false;
     return;
   }
-  if (!cfg_.flywheelHoldMode && inputs_->pressed(DS_BTN_LB) && !menuThisTick_)
-    flyLatch_ = !flyLatch_;   // not in a frame with a Menu press (controls())
+  if (!cfg_.flywheelHoldMode && inputs_->pressed(DS_BTN_LB) && !teachSwitchedThisTick_)
+    flyLatch_ = !flyLatch_;   // not in the frame whose Y switched SERVO TEACH (controls())
   const bool want = flyLatch_ || (cfg_.flywheelHoldMode && inputs_->held(DS_BTN_LB));
   if (want && !flywheel_->on())
     flywheel_->setOn(true, nowMs);
@@ -320,16 +359,17 @@ void TurretState::enterOff(uint32_t nowMs) {
   motion_->enableDrivers(false);   // EN high
   flywheel_->cut();                // PWM 0 (after FLYWHEEL_BRAKE_MS when braking is configured)
   flyLatch_ = false;
-  leaveTeach("power off");         // not saved; the summary still names the angles in force ...
-  restoreBootAngles();             // ... then a new boot: the boot angles, servo at their rest
-  trigger_->setServoPower(false);  // a running stroke is aborted first (rest, no decrement)
+  leaveTeach("power off");         // the summary still names the recorded angles ...
+  trigger_->bootMagazine();        // a new boot: ammo TRIGGER_AMMO_AT_BOOT (a stroke aborted) ...
+  forgetRecordedAngles();          // ... config.h's angles, servo at their home (REST at ammo 0)
+  trigger_->setServoPower(false);  // parked
   fault_ = DS_FAULT_NONE;          // OFF clears every fault, CAL included
   linkDroppedInFault_ = false;
   enter(DS_STATE_OFF, nowMs);
 }
 
 void TurretState::leaveOff(uint32_t nowMs) {
-  trigger_->setServoPower(true);   // Trigger's servo PWM resumes at rest
+  trigger_->setServoPower(true);   // Trigger's servo PWM resumes at home (REST at ammo 0)
   motion_->rebootPosition();       // a new boot: pan zero = here, home = (0, 0) (spec 3.3, 3.5)
   lossSinceBoot_ = false;          // a new boot: PAIRING shows "<mode> Pairing" again
   wasConnected_ = link_->connected();
@@ -350,7 +390,7 @@ void TurretState::enterFault(uint8_t fault, uint32_t nowMs) {
   leaveTeach("fault");
   fault_ = fault;
   faultSinceMs_ = nowMs;
-  trigger_->abort();               // fault mid-stroke: rest now, no decrement
+  trigger_->abort();               // fault mid-stroke: home now, no decrement
   if (flywheel_->on()) flywheel_->cut();
   flyLatch_ = false;
   if (fault == DS_FAULT_CAL) motion_->stop();
@@ -366,7 +406,7 @@ void TurretState::onLinkLost(uint32_t nowMs, const char* why) {
   l.add("link lost: ").add(why);
   debug_->log(LOG_STATE, l);
   leaveTeach("link lost");
-  trigger_->abort();               // stroke aborted: rest now, no decrement
+  trigger_->abort();               // stroke aborted: home now, no decrement
   if (cfg_.failsafeStopFlywheel) {
     if (flywheel_->on()) flywheel_->cut();
     flyLatch_ = false;
@@ -428,7 +468,7 @@ void TurretState::onStall(uint32_t nowMs) {
 TurretState::CmdResult TurretState::tryArm(uint32_t nowMs) {
   if (state_ == DS_STATE_ARMED) return CmdResult::OK;
   if (state_ != DS_STATE_DISARMED) return CmdResult::REFUSED_STATE;
-  if (teach_) return CmdResult::REFUSED_TEACHING;   // SERVO ADJUST stays DISARMED
+  if (teach_) return CmdResult::REFUSED_TEACHING;   // SERVO TEACH stays DISARMED
   if (cfg_.armRequiresTriggerReleased && inputs_->triggerPulled())
     return CmdResult::REFUSED_TRIGGER_HELD;
   enter(DS_STATE_ARMED, nowMs);
@@ -437,7 +477,7 @@ TurretState::CmdResult TurretState::tryArm(uint32_t nowMs) {
 
 void TurretState::disarm(uint32_t nowMs) {
   if (state_ != DS_STATE_ARMED) return;
-  trigger_->abort();               // disarm mid-stroke: rest now, no decrement
+  trigger_->abort();               // disarm mid-stroke: home now, no decrement
   if (cfg_.flywheelRequiresArmed) {
     if (flywheel_->on()) flywheel_->cut();
     flyLatch_ = false;
@@ -467,7 +507,7 @@ TurretState::CmdResult TurretState::refuse(CmdResult why, const char* what) {
 TurretState::CmdResult TurretState::shellCommand(ShellCmd cmd, float arg, uint32_t nowMs) {
   CmdResult r = CmdResult::OK;
   const bool controlState = state_ == DS_STATE_DISARMED || state_ == DS_STATE_ARMED;
-  // SERVO ADJUST blocks what its pad buttons no longer do (A, B, X, d-pad left / down, LB) and
+  // SERVO TEACH blocks what its pad buttons no longer do (A, B, X, d-pad left / down, LB) and
   // firing; aiming, stopping, disarm and fly off still work.
   const bool blockedByTeach =
       teach_ && (cmd == ShellCmd::ARM || cmd == ShellCmd::FIRE || cmd == ShellCmd::FLY_ON ||
@@ -491,6 +531,7 @@ TurretState::CmdResult TurretState::shellCommand(ShellCmd cmd, float arg, uint32
           switch (trigger_->gate(in)) {
             case Trigger::Gate::EMPTY: r = CmdResult::REFUSED_EMPTY; break;
             case Trigger::Gate::STROKE_RUNNING:
+            case Trigger::Gate::CHAMBERING:
             case Trigger::Gate::FLYWHEEL_NOT_READY: r = CmdResult::REFUSED_NOT_READY; break;
             case Trigger::Gate::COOLDOWN: r = CmdResult::REFUSED_COOLDOWN; break;
             default: r = CmdResult::REFUSED_STATE; break;   // NOT_ARMED, SERVO_OFF
@@ -508,6 +549,7 @@ TurretState::CmdResult TurretState::shellCommand(ShellCmd cmd, float arg, uint32
         break;
       case ShellCmd::FLY_OFF:       // releases the latch; in hold mode a held LB still spins
         flyLatch_ = false;
+        teachFly_ = false;          // SERVO TEACH's d-pad-left toggle too
         if (flywheel_->on()) flywheel_->cut();
         break;
       case ShellCmd::MODE_SEMI:
@@ -539,35 +581,57 @@ TurretState::CmdResult TurretState::shellCommand(ShellCmd cmd, float arg, uint32
         break;
       case ShellCmd::CAL:
         if (state_ == DS_STATE_DISARMED || state_ == DS_STATE_PAIRING)
-          enterCalibrating(nowMs);   // leaves SERVO ADJUST first
+          enterCalibrating(nowMs);   // leaves SERVO TEACH first
         else
           r = CmdResult::REFUSED_STATE;
         break;
-      case ShellCmd::SERVO_TEACH:   // the pad's Menu: enter, or save and leave
-        r = teach_ ? saveAndLeaveTeach("shell") : enterTeach(nowMs, "shell");
+      case ShellCmd::SERVO_TEACH:   // the pad's Y
+        if (teach_)
+          leaveTeach("shell");
+        else
+          r = enterTeach(nowMs, "shell");
         break;
       case ShellCmd::SERVO_SET:
         if (!teach_)
           r = CmdResult::REFUSED_NOT_TEACHING;
-        else if (!finiteDeg(arg) || arg < (float)SERVO_ADJUST_MIN_DEG || arg > (float)SERVO_ADJUST_MAX_DEG)
+        else if (!finiteDeg(arg) || arg < (float)SERVO_TEACH_MIN_DEG || arg > (float)SERVO_TEACH_MAX_DEG)
           r = CmdResult::REFUSED_RANGE;
         else
           r = teachGoTo((int32_t)lroundf(arg), false, nowMs);
         break;
-      case ShellCmd::SERVO_REST:    // the pad's A in adjust mode
-        r = teachRecord(false);
+      case ShellCmd::SERVO_REST:    // the pad's A in teach mode
+        r = teachRecord(TeachAngle::REST);
         break;
       case ShellCmd::SERVO_FIRE:    // B
-        r = teachRecord(true);
+        r = teachRecord(TeachAngle::FIRE);
         break;
-      case ShellCmd::SERVO_RESET:   // View
-        r = teachRestoreConfig(nowMs);
+      case ShellCmd::SERVO_SETPREFIRE:   // d-pad right
+        r = teachRecord(TeachAngle::PREFIRE);
+        break;
+      case ShellCmd::SERVO_PREFIRE:      // go to the PRE-FIRE in force
+        if (!teach_)
+          r = CmdResult::REFUSED_NOT_TEACHING;
+        else if (!teachRange(trigger_->prefireDeg()))
+          r = CmdResult::REFUSED_RANGE;
+        else
+          r = teachGoTo(wholeDeg(trigger_->prefireDeg()), false, nowMs);
+        break;
+      case ShellCmd::SERVO_SETCLEAR:     // View
+        r = teachRecord(TeachAngle::CLEAR);
+        break;
+      case ShellCmd::SERVO_CLEAR:        // go to the CLEAR in force
+        if (!teach_)
+          r = CmdResult::REFUSED_NOT_TEACHING;
+        else if (!teachRange(trigger_->clearDeg()))
+          r = CmdResult::REFUSED_RANGE;
+        else
+          r = teachGoTo(wholeDeg(trigger_->clearDeg()), false, nowMs);
         break;
       case ShellCmd::SERVO_STROKE:  // X
         r = teachTestStroke(nowMs);
         break;
-      case ShellCmd::SERVO_OFF:     // save and leave; a no-op when not in adjust mode
-        r = saveAndLeaveTeach("shell");
+      case ShellCmd::SERVO_OFF:     // a no-op when not in teach mode
+        leaveTeach("shell");
         break;
     }
   }
@@ -588,10 +652,10 @@ const char* TurretState::resultName(CmdResult r) {
     case CmdResult::REFUSED_EMPTY: return "refused: magazine empty";
     case CmdResult::REFUSED_RANGE: return "refused: outside the limits";
     case CmdResult::REFUSED_NOT_CALIBRATED: return "refused: not calibrated";
-    case CmdResult::REFUSED_TEACHING: return "refused: in servo adjust (Menu or servo off leaves it)";
-    case CmdResult::REFUSED_NOT_TEACHING: return "refused: not in servo adjust (Menu or servo adjust)";
+    case CmdResult::REFUSED_TEACHING: return "refused: in servo teach (Y or servo off leaves it)";
+    case CmdResult::REFUSED_NOT_TEACHING: return "refused: not in servo teach (Y or servo teach)";
+    case CmdResult::REFUSED_NO_FIRE: return "refused: FIRE not recorded yet (B)";
     case CmdResult::REFUSED_COOLDOWN: return "refused: semi-auto cooldown after the last shot";
-    case CmdResult::REFUSED_MOVING: return "refused: turret moving (centre the stick, then save)";
   }
   return "?";
 }
@@ -625,20 +689,20 @@ void TurretState::publish(uint32_t nowMs) {
   display_.radioMode = inputs_->radioMode();
   display_.ammo = trigger_->ammo();
   display_.linkConnected = link_->connected();
-  // ARMED red / yellow: would a pull fire now? Trigger asks its own gates (all of them) and the
-  // last shot's LED hold. Published before Trigger::update() runs, so in full auto the stroke that
-  // starts as the last one completes is already running in the next publish: no red frame between.
-  display_.fireReady = trigger_->fireReady(nowMs, triggerInput_);
-  // The empty-magazine purple double flash: ammo 0 while DISARMED or ARMED, until X; SERVO ADJUST's
-  // cyan wins over it. Display only: firing at 0 is Trigger's EMPTY gate (FIRE_LOCKOUT_WHEN_EMPTY).
-  display_.emptyMagBlink =
-      (state_ == DS_STATE_DISARMED || state_ == DS_STATE_ARMED) && !teach_ && trigger_->ammo() == 0;
+  display_.firing = trigger_->firingLedActive(nowMs);
+  display_.emptyMagBlink = state_ == DS_STATE_ARMED && trigger_->emptyMagIndicator();
   display_.pairing = pairingPhase(nowMs);
   display_.stateSinceMs = stateSinceMs_;
   display_.servoTeach = teach_;
   display_.servoDeg = commandedDeg();
+  display_.restRecorded = restRecorded_;
   display_.restDeg = wholeDeg(trigger_->restDeg());
+  display_.fireRecorded = fireRecorded_;
   display_.fireDeg = wholeDeg(trigger_->fireDeg());
+  display_.prefireRecorded = prefireRecorded_;
+  display_.prefireDeg = wholeDeg(trigger_->prefireDeg());
+  display_.clearRecorded = clearRecorded_;
+  display_.clearDeg = wholeDeg(trigger_->clearDeg());
   link_->setTurretState(state_);
 }
 
@@ -664,142 +728,57 @@ TurretState::Status TurretState::status() const {
     s.servoDeg = commandedDeg();
     s.restDeg = wholeDeg(trigger_->restDeg());
     s.fireDeg = wholeDeg(trigger_->fireDeg());
+    s.prefireDeg = wholeDeg(trigger_->prefireDeg());
+    s.clearDeg = wholeDeg(trigger_->clearDeg());
   }
-  s.bootAngles = bootAngles_;
-  s.savedRecord = savedRecord_;
-  s.saves = saves_;
-  s.saveFailures = saveFailures_;
+  s.restRecorded = restRecorded_;
+  s.fireRecorded = fireRecorded_;
+  s.prefireRecorded = prefireRecorded_;
+  s.clearRecorded = clearRecorded_;
+  s.teachFlywheel = teachFly_;
   return s;
 }
 
-// ---- SERVO ADJUST (TurretState.h) --------------------------------------------------------------------
+// ---- SERVO TEACH (TurretState.h) --------------------------------------------------------------------
 int16_t TurretState::commandedDeg() const { return wholeDeg(trigger_->servoDeg()); }
-
-servostore::Angles TurretState::anglesInForce() const {
-  servostore::Angles a;
-  a.rest = wholeDeg(trigger_->restDeg());
-  a.fire = wholeDeg(trigger_->fireDeg());
-  return a;
-}
-
-namespace {
-// "REST <n> FIRE <m>"
-void addAngles(Debug::Line& l, const servostore::Angles& a) {
-  l.add(kRestWord).add((int32_t)a.rest).add(kFireWord).add((int32_t)a.fire);
-}
-}  // namespace
-
-void TurretState::loadBootAngles() {
-  servostore::Angles saved;
-  const servostore::Load r = servostore::load(saved);
-  const servostore::Angles cfgAngles = servostore::configAngles();
-  savedRecord_ = r == servostore::Load::OK;
-  bootAngles_ = savedRecord_ ? saved : cfgAngles;
-  trigger_->setAngles((float)bootAngles_.rest, (float)bootAngles_.fire);
-  trigger_->abort();   // idle: commands the boot REST (the PWM resumes there)
-  Debug::Line l;
-  l.add(kTeachTag);
-  if (savedRecord_) {
-    l.add("loaded saved ");
-    addAngles(l, bootAngles_);
-    if (!servostore::sameAngles(bootAngles_, cfgAngles)) {
-      l.add(" (config.h has ");
-      addAngles(l, cfgAngles);
-      l.add(", not used)");
-    }
-  } else {
-    l.add("no saved angles, using config.h ");
-    addAngles(l, bootAngles_);
-    if (r == servostore::Load::INVALID) l.add(" (stored record invalid)");
-  }
-  debug_->logAlways(l);
-}
 
 TurretState::CmdResult TurretState::enterTeach(uint32_t nowMs, const char* via) {
   if (teach_) return CmdResult::OK;
   if (state_ != DS_STATE_DISARMED) return CmdResult::REFUSED_STATE;   // never from ARMED
   if (trigger_->strokeActive()) return CmdResult::REFUSED_NOT_READY;
   teach_ = true;
+  teachFly_ = false;
   if (flywheel_->on()) flywheel_->cut();   // DISARMED with the flywheels off, whatever the flags
   flyLatch_ = false;
   const int32_t start = clampTeach(wholeDeg(trigger_->restDeg()));
   trigger_->teachMove((float)start, freshTriggerInput(nowMs));
   Debug::Line l;
-  l.add(kTeachTag).add("on (").add(via).add(") at ").add(start).add(" deg, ");
-  addAngles(l, anglesInForce());
-  l.add("; A=REST B=FIRE X=test View=config.h Menu=save");
+  l.add(kTeachTag).add("on (").add(via).add(") at ").add(start).add(" deg; d-pad +-")
+      .addU(SERVO_TEACH_STEP_SMALL_DEG).add(" RB/LB +-").addU(SERVO_TEACH_STEP_LARGE_DEG)
+      .add(", A=REST B=FIRE right=PRE-FIRE View=CLEAR left=fly X=test Y=leave");
   debug_->log(LOG_STATE, l);
   return CmdResult::OK;
 }
 
-TurretState::CmdResult TurretState::saveAndLeaveTeach(const char* via) {
-  if (!teach_) return CmdResult::OK;
-  // The save blocks loop(), the motion planner with it: never while an axis moves.
-  if (motion_->isMoving()) return CmdResult::REFUSED_MOVING;
-  leaveTeach(via, true);
-  return CmdResult::OK;
-}
-
-void TurretState::leaveTeach(const char* why, bool save) {
+void TurretState::leaveTeach(const char* why) {
   if (!teach_) return;
   teach_ = false;
-  trigger_->abort();   // a test stroke cancelled; the servo back to the REST in force
-  const servostore::Angles a = anglesInForce();
+  if (flywheel_->on()) flywheel_->cut();   // the teach-mode flywheels (d-pad left) end with it
+  teachFly_ = false;
+  trigger_->abort();   // a test stroke cancelled; the servo back home (PRE-FIRE / REST in force)
+  const int32_t rest = wholeDeg(trigger_->restDeg());
+  const int32_t fire = wholeDeg(trigger_->fireDeg());
+  const int32_t prefire = wholeDeg(trigger_->prefireDeg());
+  const int32_t clear = wholeDeg(trigger_->clearDeg());
   Debug::Line l;
-  l.add(kTeachTag).add("off (").add(why).add("), servo at REST ").add((int32_t)a.rest);
+  l.add(kTeachTag).add("off (").add(why).add("), servo at ").add(trigger_->ammo() > 0 ? "PRE-FIRE " : "REST ")
+      .add((int32_t)commandedDeg());
   debug_->log(LOG_STATE, l);
-  if (save) {
-    saveAngles(a);
-  } else if (!servostore::sameAngles(a, bootAngles_)) {
-    l.clear();
-    l.add(kTeachTag).add("not saved (").add(why).add("): ");
-    addAngles(l, a);
-    l.add(" stay for this run only");
-    debug_->logAlways(l);
-  }
   l.clear();
-  l.add(kSummaryHead).add(kRestDefine).add((int32_t)a.rest).add(kSummarySep).add(kFireDefine)
-      .add((int32_t)a.fire);
+  l.add(kSummaryHead).add(kRestDefine).add(rest).add(kSummarySep).add(kFireDefine).add(fire);
   debug_->logAlways(l);
-}
-
-void TurretState::saveAngles(const servostore::Angles& a) {
-  Debug::Line l;
-  l.add(kTeachTag);
-  if (servostore::sameAngles(a, bootAngles_)) {
-    addAngles(l, a);
-    l.add(" unchanged, nothing written");
-    debug_->logAlways(l);
-    return;
-  }
-  // The one blocking call in loop(): hal::storeSave erases and programs a 1 KB data flash block,
-  // about 50 ms (hal.h; the datasheet maximum is 0.6-0.75 s). The step interrupt, the servo PWM and
-  // the UART receive rings keep running; the planner, the LEDs, the LCD and the link polls wait.
-  // Allowed only here: DISARMED, no stroke running, no axis moving (saveAndLeaveTeach and the abort
-  // in leaveTeach make sure; checked again so no other caller can save mid-stroke or mid-move).
-  if (state_ != DS_STATE_DISARMED || trigger_->strokeActive() || motion_->isMoving()) {
-    l.add("not saved (turret busy): ");
-    addAngles(l, a);
-    l.add(" stay for this run only");
-    debug_->logAlways(l);
-    return;
-  }
-  const uint32_t startUs = hal::nowUs();
-  const bool ok = servostore::save(a);
-  const uint32_t tookMs = (hal::nowUs() - startUs) / US_PER_MS;
-  if (ok) {
-    saves_++;
-    savedRecord_ = true;
-    bootAngles_ = a;
-    l.add("saved ");
-    addAngles(l, a);
-    l.add(" (survives power off), ").addU(tookMs).add(" ms");
-  } else {
-    saveFailures_++;
-    l.add("save FAILED (data flash read-back), ");
-    addAngles(l, a);
-    l.add(" stay for this run only");
-  }
+  l.clear();
+  l.add(kSummaryHead).add(kPrefireDefine).add(prefire).add(kSummarySep).add(kClearDefine).add(clear);
   debug_->logAlways(l);
 }
 
@@ -816,44 +795,56 @@ TurretState::CmdResult TurretState::teachGoTo(int32_t deg, bool clamp, uint32_t 
   return CmdResult::OK;
 }
 
-TurretState::CmdResult TurretState::teachRecord(bool fire) {
+TurretState::CmdResult TurretState::teachRecord(TeachAngle which) {
   if (!teach_) return CmdResult::REFUSED_NOT_TEACHING;
   if (trigger_->strokeActive()) return CmdResult::REFUSED_NOT_READY;   // mid test stroke
   const int32_t deg = commandedDeg();
-  if (fire)
-    trigger_->setAngles(trigger_->restDeg(), (float)deg);
-  else
-    trigger_->setAngles((float)deg, trigger_->fireDeg());
+  float rest = trigger_->restDeg(), fire = trigger_->fireDeg(), prefire = trigger_->prefireDeg(),
+        clear = trigger_->clearDeg();
+  const char* name = "REST";
+  const char* define = kRestDefine;
+  switch (which) {
+    case TeachAngle::REST:
+      rest = (float)deg;
+      restRecorded_ = true;
+      break;
+    case TeachAngle::FIRE:
+      fire = (float)deg;
+      fireRecorded_ = true;
+      name = "FIRE";
+      define = kFireDefine;
+      break;
+    case TeachAngle::PREFIRE:
+      prefire = (float)deg;
+      prefireRecorded_ = true;
+      name = "PRE-FIRE";
+      define = kPrefireDefine;
+      break;
+    case TeachAngle::CLEAR:
+      clear = (float)deg;
+      clearRecorded_ = true;
+      name = "CLEAR";
+      define = kClearDefine;
+      break;
+  }
+  trigger_->setAngles(rest, fire, prefire, clear);
   Debug::Line l;
-  l.add(kTeachTag).add(fire ? "FIRE" : "REST").add(" recorded -> ").add(fire ? kFireDefine : kRestDefine)
-      .add(deg);
-  debug_->logAlways(l);
-  return CmdResult::OK;
-}
-
-TurretState::CmdResult TurretState::teachRestoreConfig(uint32_t nowMs) {
-  if (!teach_) return CmdResult::REFUSED_NOT_TEACHING;
-  if (trigger_->strokeActive()) return CmdResult::REFUSED_NOT_READY;   // mid test stroke
-  const servostore::Angles cfgAngles = servostore::configAngles();
-  trigger_->setAngles((float)cfgAngles.rest, (float)cfgAngles.fire);
-  trigger_->teachMove((float)clampTeach(cfgAngles.rest), freshTriggerInput(nowMs));
-  Debug::Line l;
-  l.add(kTeachTag).add("config.h angles restored: ");
-  addAngles(l, cfgAngles);
-  l.add(" (Menu saves them)");
+  l.add(kTeachTag).add(name).add(" recorded -> ").add(define).add(deg);
   debug_->logAlways(l);
   return CmdResult::OK;
 }
 
 TurretState::CmdResult TurretState::teachTestStroke(uint32_t nowMs) {
   if (!teach_) return CmdResult::REFUSED_NOT_TEACHING;
-  // It sweeps between the angles in force; config.h's (View) may lie outside the adjust range.
-  const servostore::Angles a = anglesInForce();
-  if (clampTeach(a.rest) != a.rest || clampTeach(a.fire) != a.fire) return CmdResult::REFUSED_RANGE;
+  if (!fireRecorded_) return CmdResult::REFUSED_NO_FIRE;
+  // It visits the REST and PRE-FIRE in force; config.h's may lie outside the teach range (record them).
+  if (!teachRange(trigger_->restDeg()) || !teachRange(trigger_->prefireDeg()) || !teachRange(trigger_->clearDeg()))
+    return CmdResult::REFUSED_RANGE;
   if (!trigger_->testStroke(nowMs, freshTriggerInput(nowMs))) return CmdResult::REFUSED_NOT_READY;
   Debug::Line l;
-  l.add(kTeachTag).add("test stroke REST ").add((int32_t)a.rest).add(" -> FIRE ").add((int32_t)a.fire)
-      .add(" -> REST (no dart counted)");
+  l.add(kTeachTag).add("test stroke PRE-FIRE ").add((int32_t)wholeDeg(trigger_->prefireDeg())).add(" -> FIRE ")
+      .add((int32_t)wholeDeg(trigger_->fireDeg())).add(" -> REST ").add((int32_t)wholeDeg(trigger_->restDeg()))
+      .add(" -> CLEAR ").add((int32_t)wholeDeg(trigger_->clearDeg())).add(" -> REST -> PRE-FIRE (no dart counted)");
   debug_->log(LOG_STATE, l);
   return CmdResult::OK;
 }
@@ -865,10 +856,10 @@ void TurretState::teachButtons(uint32_t nowMs) {
     const char* name;
   };
   const Nudge nudges[] = {
-      {DS_BTN_DPAD_UP, SERVO_ADJUST_STEP_SMALL_DEG, "d-pad up (servo +)"},
-      {DS_BTN_DPAD_DOWN, -SERVO_ADJUST_STEP_SMALL_DEG, "d-pad down (servo -)"},
-      {DS_BTN_RB, SERVO_ADJUST_STEP_LARGE_DEG, "RB (servo ++)"},
-      {DS_BTN_LB, -SERVO_ADJUST_STEP_LARGE_DEG, "LB (servo --)"},
+      {DS_BTN_DPAD_UP, SERVO_TEACH_STEP_SMALL_DEG, "d-pad up (servo +)"},
+      {DS_BTN_DPAD_DOWN, -SERVO_TEACH_STEP_SMALL_DEG, "d-pad down (servo -)"},
+      {DS_BTN_RB, SERVO_TEACH_STEP_LARGE_DEG, "RB (servo ++)"},
+      {DS_BTN_LB, -SERVO_TEACH_STEP_LARGE_DEG, "LB (servo --)"},
   };
   for (const Nudge& n : nudges) {
     if (!inputs_->pressed(n.button)) continue;
@@ -876,31 +867,46 @@ void TurretState::teachButtons(uint32_t nowMs) {
     if (r != CmdResult::OK) refuse(r, n.name);
   }
   if (inputs_->pressed(DS_BTN_A)) {
-    const CmdResult r = teachRecord(false);
+    const CmdResult r = teachRecord(TeachAngle::REST);
     if (r != CmdResult::OK) refuse(r, "A (record REST)");
   }
   if (inputs_->pressed(DS_BTN_B)) {
-    const CmdResult r = teachRecord(true);
+    const CmdResult r = teachRecord(TeachAngle::FIRE);
     if (r != CmdResult::OK) refuse(r, "B (record FIRE)");
   }
+  if (inputs_->pressed(DS_BTN_DPAD_RIGHT)) {
+    const CmdResult r = teachRecord(TeachAngle::PREFIRE);
+    if (r != CmdResult::OK) refuse(r, "d-pad right (record PRE-FIRE)");
+  }
   if (inputs_->pressed(DS_BTN_BACK)) {
-    const CmdResult r = teachRestoreConfig(nowMs);
-    if (r != CmdResult::OK) refuse(r, "View (config.h angles)");
+    const CmdResult r = teachRecord(TeachAngle::CLEAR);
+    if (r != CmdResult::OK) refuse(r, "View (record CLEAR)");
+  }
+  if (inputs_->pressed(DS_BTN_DPAD_LEFT)) {   // flywheels on / off (normal ramp); decideFlywheel acts
+    teachFly_ = !teachFly_;
+    Debug::Line l;
+    l.add(kTeachTag).add("flywheels ").add(teachFly_ ? "on" : "off").add(" (d-pad left)");
+    debug_->log(LOG_STATE, l);
   }
   if (inputs_->pressed(DS_BTN_X)) {
     const CmdResult r = teachTestStroke(nowMs);
     if (r != CmdResult::OK) refuse(r, "X (test stroke)");
   }
-  // d-pad left / right: nothing in adjust mode (no set home).
+  // No set home / go home in teach mode (d-pad left / down have other jobs here).
 }
 
-void TurretState::restoreBootAngles() {
-  if (!servostore::sameAngles(anglesInForce(), bootAngles_)) {
+void TurretState::forgetRecordedAngles() {
+  if (restRecorded_ || fireRecorded_ || prefireRecorded_ || clearRecorded_) {
     Debug::Line l;
-    l.add(kTeachTag).add("unsaved angles dropped (power off): back to ").add(savedRecord_ ? "saved " : "config.h ");
-    addAngles(l, bootAngles_);
+    l.add(kTeachTag).add("recorded angles dropped (a new boot): config.h REST ").add((int32_t)TRIGGER_REST_ANGLE)
+        .add(" FIRE ").add((int32_t)TRIGGER_FIRE_ANGLE).add(" PRE-FIRE ").add((int32_t)TRIGGER_PREFIRE_ANGLE)
+        .add(" CLEAR ").add((int32_t)TRIGGER_CLEAR_ANGLE);
     debug_->log(LOG_STATE, l);
   }
-  trigger_->setAngles((float)bootAngles_.rest, (float)bootAngles_.fire);
-  trigger_->abort();   // idle here: commands the boot REST, where the PWM resumes at power-on
+  restRecorded_ = false;
+  fireRecorded_ = false;
+  prefireRecorded_ = false;
+  clearRecorded_ = false;
+  trigger_->resetAngles();
+  trigger_->abort();   // idle here: commands config.h's home, where the PWM resumes at power-on
 }

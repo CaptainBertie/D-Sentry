@@ -121,7 +121,6 @@ class DemoTurret:
         self.stroke: Optional[str] = None
         self.stroke_until = 0.0
         self.stroke_started = -1e9
-        self.empty_since: Optional[float] = None   # when the empty-magazine double flash began
         self.pulled = False
         self.pull_armed = False      # the current pull started while ARMED
         self.semi_spent = False
@@ -327,48 +326,32 @@ class DemoTurret:
 
     # -- outputs ----------------------------------------------------------------------------
     def _led(self, now: float):
-        # The owner's scheme of 2026-11-03 (Leds.h): ARMED red when a pull would fire now, yellow
-        # while the next shot is not available; at ammo 0 (DISARMED / ARMED) a purple double flash
-        # over that colour until X.
         c = self.c
         t = (now - self.t0) * 1000.0
+        blink_on = int(t // c["LED_FAULT_BLINK_MS"]) % 2 == 0
         pulse = 0.5 - 0.5 * math.cos(2.0 * math.pi * t / c["LED_PULSE_PERIOD_MS"])
         floor = c["LED_PULSE_MIN_FRACTION"]
         k = floor + (1.0 - floor) * pulse
-        if self.state in (P.DS_STATE_BOOT, P.DS_STATE_CALIBRATING):
+        firing = self.stroke is not None or now - self.stroke_started < c["LED_FIRE_FLASH_MIN_MS"] / 1000.0
+        if firing:
+            rgb, k = c.rgb("LED_COLOR_FIRING"), 1.0
+        elif self._empty_blink():
+            rgb, k = c.rgb("LED_COLOR_EMPTY_MAG"), 1.0 if blink_on else 0.0
+        elif self.state in (P.DS_STATE_BOOT, P.DS_STATE_CALIBRATING):
             rgb = c.rgb("LED_COLOR_STARTUP")
         elif self.state == P.DS_STATE_PAIRING:
             a, b = c.rgb("LED_COLOR_PAIRING_A"), c.rgb("LED_COLOR_PAIRING_B")
             rgb, k = tuple(round(x + (y - x) * pulse) for x, y in zip(a, b)), 1.0
         elif self.state == P.DS_STATE_ARMED:
-            rgb, k = c.rgb("LED_COLOR_ARMED_READY" if self._fire_ready(now) else "LED_COLOR_ARMED_WAIT"), 1.0
+            rgb, k = c.rgb("LED_COLOR_ARMED_FULL" if self.fire_mode else "LED_COLOR_ARMED_SEMI"), 1.0
         else:
             rgb, k = c.rgb("LED_COLOR_DISARMED"), 1.0
-        if not self._empty_blink():
-            self.empty_since = None
-        elif self.empty_since is None:
-            self.empty_since = now                 # the first flash starts at once
-        if self.empty_since is not None:
-            phase = ((now - self.empty_since) * 1000.0) % c["LED_EMPTY_FLASH_PERIOD_MS"]
-            on, gap = c["LED_EMPTY_FLASH_ON_MS"], c["LED_EMPTY_FLASH_GAP_MS"]
-            if phase < on or on + gap <= phase < 2 * on + gap:
-                rgb, k = c.rgb("LED_COLOR_EMPTY_MAG"), 1.0
         scale = c["LED_MAX_BRIGHTNESS"] / c["LED_CHANNEL_MAX"]
         return tuple(round(v * k * scale) for v in rgb)
 
-    def _fire_ready(self, now: float) -> bool:
-        """A pull would fire now: armed, no stroke and its LED_FIRE_FLASH_MIN_MS hold over, the
-        flywheel spun up unless FIRE_REQUIRES_FLYWHEEL is off, ammo only with the lockout on."""
-        c = self.c
-        if not self.armed or self.stroke is not None:
-            return False
-        if now - self.stroke_started < c["LED_FIRE_FLASH_MIN_MS"] / 1000.0:
-            return False
-        spun = self.fly_since is not None and now - self.fly_since >= c["FLYWHEEL_SPINUP_MS"] / 1000.0
-        return (self.ammo > 0 or not c["FIRE_LOCKOUT_WHEN_EMPTY"]) and (spun or not c["FIRE_REQUIRES_FLYWHEEL"])
-
     def _empty_blink(self) -> bool:
-        return self.state in (P.DS_STATE_DISARMED, P.DS_STATE_ARMED) and self.ammo == 0
+        return (self.state == P.DS_STATE_ARMED and self.ammo == 0 and self.c["FIRE_LOCKOUT_WHEN_EMPTY"]
+                and self.pulled)
 
     def _row(self, left: str, right: str) -> str:
         cols = self.c["LCD_COLS"]

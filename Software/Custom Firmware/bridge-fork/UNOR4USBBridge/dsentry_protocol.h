@@ -186,10 +186,8 @@ DS_STATIC_ASSERT(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
 #define DS_CTRL_FLAG_ALL         0x0Fu  /* every defined bit */
 
 /* Buttons (16-bit): ControlPacket.buttons and TelemetryPacket.padButtons (spec 3.2 mapping: A arm,
- * B semi/full, X magazine, d-pad left set home, d-pad down go home; Menu enters SERVO ADJUST from
- * DISARMED, where d-pad up/down, RB/LB, A, B, View and X set the trigger servo angles instead and
- * Menu saves and leaves, TurretState.h). Bits 12-15 exist for the dashboard's controller view: a
- * ControlPacket may carry them and the RA4M1 never acts on them. */
+ * B semi/full, X magazine, d-pad left set home, d-pad down go home). Bits 12-15 exist for the
+ * dashboard's controller view: a ControlPacket may carry them and the RA4M1 never acts on them. */
 #define DS_BTN_A          0x0001u  /* bit 0: A: toggle ARMED/DISARMED */
 #define DS_BTN_B          0x0002u  /* bit 1: B: toggle semi/full */
 #define DS_BTN_X          0x0004u  /* bit 2: X: reset magazine to MAG_CAPACITY */
@@ -200,10 +198,8 @@ DS_STATIC_ASSERT(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
 #define DS_BTN_DPAD_DOWN  0x0080u  /* bit 7: d-pad down: go home */
 #define DS_BTN_DPAD_LEFT  0x0100u  /* bit 8: d-pad left: set home */
 #define DS_BTN_DPAD_RIGHT 0x0200u  /* bit 9: d-pad right: unused */
-/* bit 10: Menu (start): servo adjust when DISARMED (enter / save and leave) */
-#define DS_BTN_START      0x0400u
-/* bit 11: View (back): in servo adjust, config.h's REST / FIRE back in force; else unused */
-#define DS_BTN_BACK       0x0800u
+#define DS_BTN_START      0x0400u  /* bit 10: Menu (start): unused */
+#define DS_BTN_BACK       0x0800u  /* bit 11: View (back): unused */
 /* bit 12: left stick click: shown on the dashboard, no turret action */
 #define DS_BTN_LS_CLICK   0x1000u
 #define DS_BTN_RS_CLICK   0x2000u  /* bit 13: right stick click: shown, no turret action */
@@ -226,8 +222,7 @@ DS_STATIC_ASSERT(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
 #define DS_TELEM_FLAG_POWER_TOGGLE_ON     0x0080u  /* bit 7: power toggle (A0) reads on */
 #define DS_TELEM_FLAG_MODE_TOGGLE_WIFI    0x0100u  /* bit 8: mode toggle (A1) reads WiFi */
 #define DS_TELEM_FLAG_STALL_ENABLED       0x0200u  /* bit 9: stall detector active */
-/* bit 10: empty-magazine double flash showing (ammo 0, DISARMED/ARMED) */
-#define DS_TELEM_FLAG_EMPTY_MAG_BLINK     0x0400u
+#define DS_TELEM_FLAG_EMPTY_MAG_BLINK     0x0400u  /* bit 10: empty-magazine blink showing */
 #define DS_TELEM_FLAG_DRIVERS_ENABLED     0x0800u  /* bit 11: stepper drivers enabled (EN low) */
 /* bit 12: the ESP32 answered AT+DSCAPS? with ERROR (old fork/stock) */
 #define DS_TELEM_FLAG_ESP_LEGACY_FIRMWARE 0x1000u

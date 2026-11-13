@@ -29,7 +29,7 @@
 #define RUMBLE_FULL_AUTO_CONTINUOUS true // [CHOICE] keep rumbling while cycling
 #define JOY_AXIS_RANGE             512   // [HW] Bluepad32 axis range is -512..511
 #define TRIGGER_AXIS_RANGE        1023   // [HW] Bluepad32 trigger range 0..1023
-#define JOY_INVERT_Y              true   // [HW] Bluepad32 reports stick-up as
+#define JOY_INVERT_Y              true   // [HW] Bluepad32 reports stick-up as (owner flipped back 2026-11-06)
                                          //      negative; true makes up = +tilt
 
 // Failsafe on controller loss --------------------------------------------------
@@ -45,7 +45,7 @@
 #define WIFI_PASSWORD             ""            // [HW]
 #define WIFI_MODE_AP_FALLBACK     true          // [CHOICE] host own AP if STA fails
 #define WIFI_AP_SSID              "D-SENTRY"
-#define WIFI_AP_PASSWORD          "brockpurdy"  // [HW] >= 8 chars (owner, 2026-11-03)
+#define WIFI_AP_PASSWORD          "CHANGE_ME_8CHARS"  // [HW] >= 8 chars - REDACTED for the public repo, set your own
 #define WIFI_UDP_PORT             4210          // [HW] PC relay sends here
 #define BLE_DEVICE_NAME           "D-SENTRY"
 #define BLE_FORGET_PAIRINGS_ON_BOOT false       // [CHOICE] true wipes bond keys
@@ -55,135 +55,135 @@
 // -----------------------------------------------------------------------------
 // config.h:56 (1. PIN MAP): listed in ESP32_EXTRA
 #define LINK_BAUD          115200       // [HW] must match ESP32-S3 firmware
-// config.h:339 (13. ADDED DURING THE BUILD): listed in ESP32_EXTRA
+// config.h:359 (13. ADDED DURING THE BUILD): listed in ESP32_EXTRA
 #define STATUS_HEARTBEAT_MS        500   // [TUNE] AT+DSS / USB StatusPacket repeat
                                          //        when nothing changed (spec 5)
-// config.h:349 (13. ADDED DURING THE BUILD): listed in ESP32_EXTRA
+// config.h:369 (13. ADDED DURING THE BUILD): listed in ESP32_EXTRA
 #define TELEMETRY_WIFI_HZ           10   // [TUNE] AT+DST lines/s in WiFi mode (229 B
                                          //        each on the 115200 AT link)
-// config.h:452 (13. ADDED DURING THE BUILD): name starts with ESP_
+// config.h:476 (13. ADDED DURING THE BUILD): name starts with ESP_
 #define ESP_RESTART_DELAY_MS        50   // [TUNE] after replying espMode=3 the ESP32
                                          //        waits this long, then restarts
-// config.h:454 (13. ADDED DURING THE BUILD): name starts with WIFI_
+// config.h:478 (13. ADDED DURING THE BUILD): name starts with WIFI_
 #define WIFI_STA_CONNECT_TIMEOUT_MS 10000 // [TUNE] station join attempt before the AP
                                           //        fallback (WIFI_MODE_AP_FALLBACK)
-// config.h:456 (13. ADDED DURING THE BUILD): name starts with WIFI_
+// config.h:480 (13. ADDED DURING THE BUILD): name starts with WIFI_
 #define WIFI_STA_RETRY_MS         30000  // [TUNE] gap between station join attempts
                                          //        while not joined
-// config.h:458 (13. ADDED DURING THE BUILD): name starts with WIFI_
+// config.h:482 (13. ADDED DURING THE BUILD): name starts with WIFI_
 #define WIFI_AP_IP          "192.168.4.1"   // [HW] own-AP address, set explicitly
                                             //      with WiFi.softAPConfig
-// config.h:460 (13. ADDED DURING THE BUILD): name starts with WIFI_
+// config.h:484 (13. ADDED DURING THE BUILD): name starts with WIFI_
 #define WIFI_AP_NETMASK     "255.255.255.0" // [HW]
-// config.h:461 (13. ADDED DURING THE BUILD): name starts with WIFI_
+// config.h:485 (13. ADDED DURING THE BUILD): name starts with WIFI_
 #define WIFI_AP_CHANNEL              6   // [CHOICE] 2.4 GHz channel of the own AP
-// config.h:462 (13. ADDED DURING THE BUILD): name starts with WIFI_
+// config.h:486 (13. ADDED DURING THE BUILD): name starts with WIFI_
 #define WIFI_DISCOVERY_PORT       4211   // [HW] BeaconPacket broadcast port (the PC
                                          //      relay listens here)
-// config.h:464 (13. ADDED DURING THE BUILD): name starts with WIFI_
+// config.h:488 (13. ADDED DURING THE BUILD): name starts with WIFI_
 #define WIFI_BEACON_MS            1000   // [TUNE] BeaconPacket interval in WiFi mode
-// config.h:465 (13. ADDED DURING THE BUILD): name starts with WIFI_
+// config.h:489 (13. ADDED DURING THE BUILD): name starts with WIFI_
 #define WIFI_TASK_POLL_MS            5   // [TUNE] UDP receive timeout of the ESP32's WiFi task
                                          //        loop: worst-case delay before a StatusPacket
                                          //        or an AT+DST frame goes out to the relay
-// config.h:468 (13. ADDED DURING THE BUILD): name starts with ESP_
+// config.h:492 (13. ADDED DURING THE BUILD): name starts with ESP_
 #define ESP_WIFI_TASK_STACK_BYTES 6144   // [HW] stack of the D-Sentry WiFi task (WiFi.begin,
                                          //      lwIP sockets); the research prototype ran in 6 KB
-// config.h:470 (13. ADDED DURING THE BUILD): name starts with ESP_
+// config.h:494 (13. ADDED DURING THE BUILD): name starts with ESP_
 #define ESP_WIFI_TASK_PRIORITY       1   // [HW] FreeRTOS priority, same as the AT task and the
                                          //      Xbox client task
-// config.h:472 (13. ADDED DURING THE BUILD): name starts with ESP_
+// config.h:496 (13. ADDED DURING THE BUILD): name starts with ESP_
 #define ESP_WIFI_TASK_CORE           0   // [HW] core 0 with the AT task and the WiFi driver;
                                          //      core 1 runs the USB passthrough loop
-// config.h:513 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): listed in ESP32_EXTRA
+// config.h:537 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): listed in ESP32_EXTRA
 #define MS_PER_S                1000UL
-// config.h:514 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): listed in ESP32_EXTRA
+// config.h:538 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): listed in ESP32_EXTRA
 #define US_PER_MS               1000UL
-// config.h:515 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): listed in ESP32_EXTRA
+// config.h:539 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): listed in ESP32_EXTRA
 #define US_PER_S             1000000UL
-// config.h:519 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): listed in ESP32_EXTRA
+// config.h:543 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): listed in ESP32_EXTRA
 #define DEC_BASE                    10   // decimal digits (number formatting)
-// config.h:520 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): listed in ESP32_EXTRA
+// config.h:544 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): listed in ESP32_EXTRA
 #define HEX_BASE                    16   // hex digits
-// config.h:522 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): listed in ESP32_EXTRA
+// config.h:546 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): listed in ESP32_EXTRA
 #define BITS_PER_BYTE                8
-// config.h:523 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): listed in ESP32_EXTRA
+// config.h:547 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): listed in ESP32_EXTRA
 #define BYTE_MASK                 0xFFu
-// config.h:542 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): listed in ESP32_EXTRA
+// config.h:566 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): listed in ESP32_EXTRA
 #define UART_BITS_PER_BYTE          10   // 8N1: start + 8 data + stop
-// config.h:588 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with ESP_
+// config.h:603 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with ESP_
 #define ESP_MODE_REQUEST_MAGIC 0xD5E27701u // marks the RTC_NOINIT mode request as written by
                                            // this firmware; any value power-on garbage is
                                            // unlikely to hold
-// config.h:593 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_OFS_JOY_LH            0   // u16 LE left stick X, 0 = left
-// config.h:594 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_OFS_JOY_LV            2   // u16 LE left stick Y, 0 = up
-// config.h:595 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_OFS_JOY_RH            4   // u16 LE right stick X, 0 = left
-// config.h:596 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_OFS_JOY_RV            6   // u16 LE right stick Y, 0 = up
-// config.h:597 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_OFS_TRIG_LT           8   // u16 LE left trigger, 0..1023
-// config.h:598 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_OFS_TRIG_RT          10   // u16 LE right trigger, 0..1023
-// config.h:599 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_OFS_DPAD             12   // d-pad code, XSTATE_DPAD_*
-// config.h:600 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_OFS_BTN0             13   // XSTATE_BTN0_* bits
-// config.h:601 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_OFS_BTN1             14   // XSTATE_BTN1_* bits
-// config.h:602 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_OFS_BTN2             15   // XSTATE_BTN2_* bits
-// config.h:603 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_OFS_CONN             16   // enum xbox_r4_conn_state, 0 = connected
-// config.h:604 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_OFS_BATTERY          17   // battery percent 0..100, 0xFF unknown
-// config.h:605 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_OFS_SEQ              18   // HID report counter, low byte
-// config.h:606 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_BTN0_A             0x01
-// config.h:607 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_BTN0_B             0x02
 // config.h:608 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_BTN0_X             0x08
+#define XSTATE_OFS_JOY_LH            0   // u16 LE left stick X, 0 = left
 // config.h:609 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_BTN0_Y             0x10
+#define XSTATE_OFS_JOY_LV            2   // u16 LE left stick Y, 0 = up
 // config.h:610 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_BTN0_LB            0x40
+#define XSTATE_OFS_JOY_RH            4   // u16 LE right stick X, 0 = left
 // config.h:611 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_BTN0_RB            0x80
+#define XSTATE_OFS_JOY_RV            6   // u16 LE right stick Y, 0 = up
 // config.h:612 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_BTN1_VIEW          0x04   // View = back
+#define XSTATE_OFS_TRIG_LT           8   // u16 LE left trigger, 0..1023
 // config.h:613 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_BTN1_MENU          0x08   // Menu = start
+#define XSTATE_OFS_TRIG_RT          10   // u16 LE right trigger, 0..1023
 // config.h:614 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_BTN1_XBOX          0x10   // Xbox (guide) button
+#define XSTATE_OFS_DPAD             12   // d-pad code, XSTATE_DPAD_*
 // config.h:615 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_BTN1_LS            0x20   // left stick click
+#define XSTATE_OFS_BTN0             13   // XSTATE_BTN0_* bits
 // config.h:616 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_BTN1_RS            0x40   // right stick click
+#define XSTATE_OFS_BTN1             14   // XSTATE_BTN1_* bits
 // config.h:617 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_BTN2_SHARE         0x01   // Share button
+#define XSTATE_OFS_BTN2             15   // XSTATE_BTN2_* bits
 // config.h:618 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_DPAD_NONE             0
+#define XSTATE_OFS_CONN             16   // enum xbox_r4_conn_state, 0 = connected
 // config.h:619 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_DPAD_N                1
+#define XSTATE_OFS_BATTERY          17   // battery percent 0..100, 0xFF unknown
 // config.h:620 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_DPAD_NE               2
+#define XSTATE_OFS_SEQ              18   // HID report counter, low byte
 // config.h:621 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_DPAD_E                3
+#define XSTATE_BTN0_A             0x01
 // config.h:622 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_DPAD_SE               4
+#define XSTATE_BTN0_B             0x02
 // config.h:623 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_DPAD_S                5
+#define XSTATE_BTN0_X             0x08
 // config.h:624 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_DPAD_SW               6
+#define XSTATE_BTN0_Y             0x10
 // config.h:625 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_DPAD_W                7
+#define XSTATE_BTN0_LB            0x40
 // config.h:626 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_DPAD_NW               8
+#define XSTATE_BTN0_RB            0x80
 // config.h:627 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
-#define XSTATE_AXIS_CENTRE       32768   // stick centre in 0..65535
+#define XSTATE_BTN1_VIEW          0x04   // View = back
 // config.h:628 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
+#define XSTATE_BTN1_MENU          0x08   // Menu = start
+// config.h:629 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
+#define XSTATE_BTN1_XBOX          0x10   // Xbox (guide) button
+// config.h:630 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
+#define XSTATE_BTN1_LS            0x20   // left stick click
+// config.h:631 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
+#define XSTATE_BTN1_RS            0x40   // right stick click
+// config.h:632 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
+#define XSTATE_BTN2_SHARE         0x01   // Share button
+// config.h:633 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
+#define XSTATE_DPAD_NONE             0
+// config.h:634 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
+#define XSTATE_DPAD_N                1
+// config.h:635 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
+#define XSTATE_DPAD_NE               2
+// config.h:636 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
+#define XSTATE_DPAD_E                3
+// config.h:637 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
+#define XSTATE_DPAD_SE               4
+// config.h:638 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
+#define XSTATE_DPAD_S                5
+// config.h:639 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
+#define XSTATE_DPAD_SW               6
+// config.h:640 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
+#define XSTATE_DPAD_W                7
+// config.h:641 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
+#define XSTATE_DPAD_NW               8
+// config.h:642 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
+#define XSTATE_AXIS_CENTRE       32768   // stick centre in 0..65535
+// config.h:643 (14. FIXED CONSTANTS (units and hardware facts — not tunables, do not edit)): name starts with XSTATE_
 #define XSTATE_AXIS_SHIFT            6   // (raw - centre) >> 6 = -512..511

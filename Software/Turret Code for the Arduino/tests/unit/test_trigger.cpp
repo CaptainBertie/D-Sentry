@@ -1,18 +1,19 @@
-// test_trigger.cpp -- Trigger (spec 3.4, architecture.md 5 and 6): the stroke timeline (sweep out
-// at TRIGGER_SWEEP_DEG_PER_S, hold FIRE, sweep back, hold REST), semi and full auto, the semi
-// cooldown, abort in every phase, the magazine (floor 0, lockout, reset), the flywheel gate, "a
-// pull counts only if it started while ARMED", rumble requests, the firing-LED hold and the shot
-// counter.
+// test_trigger.cpp -- Trigger (spec 3.4, architecture.md 5 and 6): the shot sequence (PRE-FIRE ->
+// FIRE held -> REST held -> pause -> the shot counts -> PRE-FIRE held, or stay at REST at ammo 0),
+// with and without sweeps, semi and full auto, the semi cooldown, abort in every phase (home
+// now), the magazine (boot ammo, reload to PRE-FIRE, chambering, floor 0, lockout), the flywheel
+// gate, "a pull counts only if it started while ARMED", rumble requests, the firing-LED hold and
+// the shot counter.
 //
 // Time is the module's own nowMs argument; the servo is observed through the host HAL
 // (hal_host::servoAngle / servoOn), i.e. what the PWM would really be told. Every expected time
-// is computed here from config.h (sweepFor below states the sweep rule), never read from the
-// module under test.
+// is computed here from config.h (sweepFor and segments below state the rules), never read from
+// the module under test.
 //
 // Safety property: a stroke never keeps running once armed goes false, and an aborted stroke
 // never costs a dart, in whatever phase it is aborted
-// (abort_in_every_phase_rests_now_never_decrements_and_starts_no_cooldown,
-// disarm_mid_stroke_rests_at_once_without_an_abort_call).
+// (abort_in_every_phase_goes_home_now_never_decrements_and_starts_no_cooldown,
+// disarm_mid_stroke_goes_home_at_once_without_an_abort_call).
 //
 // SPDX-License-Identifier: MIT
 #include <algorithm>
@@ -34,9 +35,16 @@ using Phase = Trigger::Phase;
 
 constexpr uint32_t kFwd = TRIGGER_FORWARD_MS;
 constexpr uint32_t kRet = TRIGGER_RETURN_MS;
+constexpr uint32_t kClearHold = TRIGGER_CLEAR_HOLD_MS;
+constexpr uint32_t kChamber = TRIGGER_CHAMBER_MS;
 constexpr uint32_t kCool = TRIGGER_COOLDOWN_MS;
 constexpr float kRate = TRIGGER_SWEEP_DEG_PER_S;
-constexpr double kDegTol = 1e-3;   // float rounding of a commanded angle mid sweep
+constexpr float kTestRate = 300.0f;   // a glide for the sweep tests, whatever config.h ships
+constexpr double kDegTol = 1e-3;      // float rounding of a commanded angle mid sweep
+constexpr float kPre = TRIGGER_PREFIRE_ANGLE;
+constexpr float kFire = TRIGGER_FIRE_ANGLE;
+constexpr float kRest = TRIGGER_REST_ANGLE;
+constexpr float kClear = TRIGGER_CLEAR_ANGLE;
 
 // The sweep rule (Trigger.h): with an update every ms, a sweep of spanDeg lands at the first
 // whole ms whose distance at the rate covers the span; 0 without a sweep (rate 0) or a span.
@@ -53,31 +61,96 @@ float sweptTo(float from, float to, uint32_t ms, float degPerS = kRate) {
   return to > from ? from + travel : from - travel;
 }
 
-const uint32_t kSweep = sweepFor(spanOf(TRIGGER_FIRE_ANGLE, TRIGGER_REST_ANGLE));
-const uint32_t kStroke = kSweep + kFwd + kSweep + kRet;   // config.h's angles, from REST
-
-// Where each phase starts, counted from the stroke's start, and how long it lasts.
-uint32_t phaseStart(Phase p, uint32_t sweep = kSweep) {
-  switch (p) {
-    case Phase::SWEEP_OUT: return 0;
-    case Phase::HOLD_FIRE: return sweep;
-    case Phase::SWEEP_BACK: return sweep + kFwd;
-    case Phase::HOLD_REST: return sweep + kFwd + sweep;
-    case Phase::IDLE: break;
+// One shot's sequence (Trigger.h) as segments: each phase, whether it sweeps, its end angle and
+// its length. From `from`: [lead-in: sweep to PRE-FIRE, hold TRIGGER_CHAMBER_MS] sweep to FIRE,
+// hold TRIGGER_FORWARD_MS, sweep to REST, hold TRIGGER_RETURN_MS, sweep to CLEAR, hold
+// TRIGGER_CLEAR_HOLD_MS, sweep to REST, hold TRIGGER_RETURN_MS (the shot counts at its end), [chamber: sweep to PRE-FIRE, hold TRIGGER_CHAMBER_MS], idle.
+struct Shot {
+  float from = kPre, fire = kFire, rest = kRest, prefire = kPre, clear = kClear;
+  bool clearStop = TRIGGER_CLEAR_ENABLED;   // the CLEAR visit and second REST hold
+  bool chamber = true;    // ammo left after it (or a test stroke)
+  bool leadIn = false;    // a test stroke from off PRE-FIRE
+  float rate = kRate;
+};
+struct Seg {
+  Phase phase;
+  bool sweep;
+  float from, to;
+  uint32_t len;
+};
+std::vector<Seg> segments(const Shot& s) {
+  std::vector<Seg> v;
+  float at = s.from;
+  auto sweep = [&](Phase p, float to) {
+    v.push_back({p, true, at, to, sweepFor(spanOf(to, at), s.rate)});
+    at = to;
+  };
+  auto hold = [&](Phase p, uint32_t ms) { v.push_back({p, false, at, at, ms}); };
+  if (s.leadIn) {
+    sweep(Phase::SWEEP_CHAMBER, s.prefire);
+    hold(Phase::HOLD_CHAMBER, kChamber);
   }
-  return sweep + kFwd + sweep + kRet;
+  sweep(Phase::SWEEP_OUT, s.fire);
+  hold(Phase::HOLD_FIRE, kFwd);
+  sweep(Phase::SWEEP_BACK, s.rest);
+  hold(Phase::HOLD_REST, kRet);
+  if (s.clearStop) {
+    sweep(Phase::SWEEP_CLEAR, s.clear);
+    hold(Phase::HOLD_CLEAR, kClearHold);
+    sweep(Phase::SWEEP_RACK, s.rest);
+    hold(Phase::HOLD_RACK, kRet);
+  }
+  if (s.chamber) {
+    sweep(Phase::SWEEP_CHAMBER, s.prefire);
+    hold(Phase::HOLD_CHAMBER, kChamber);
+  }
+  return v;
 }
-uint32_t phaseLength(Phase p, uint32_t sweep = kSweep) {
-  switch (p) {
-    case Phase::SWEEP_OUT:
-    case Phase::SWEEP_BACK: return sweep;
-    case Phase::HOLD_FIRE: return kFwd;
-    case Phase::HOLD_REST: return kRet;
-    case Phase::IDLE: break;
+uint32_t totalMs(const Shot& s) {
+  uint32_t ms = 0;
+  for (const Seg& g : segments(s)) ms += g.len;
+  return ms;
+}
+float endDeg(const Shot& s) { return segments(s).back().to; }
+// When the shot counts: the end of the last REST hold (HOLD_RACK, or HOLD_REST without the
+// CLEAR visit), from the start.
+uint32_t countMs(const Shot& s) {
+  uint32_t ms = 0;
+  for (const Seg& g : segments(s)) {
+    ms += g.len;
+    if (g.phase == (s.clearStop ? Phase::HOLD_RACK : Phase::HOLD_REST)) break;
   }
+  return ms;
+}
+// Where the (first) phase p starts and how long it lasts; a shot without a lead-in.
+uint32_t phaseStart(Phase p, const Shot& s = Shot()) {
+  uint32_t ms = 0;
+  for (const Seg& g : segments(s)) {
+    if (g.phase == p) return ms;
+    ms += g.len;
+  }
+  return ms;
+}
+uint32_t phaseLength(Phase p, const Shot& s = Shot()) {
+  for (const Seg& g : segments(s))
+    if (g.phase == p) return g.len;
   return 0;
 }
-const Phase kStrokePhases[] = {Phase::SWEEP_OUT, Phase::HOLD_FIRE, Phase::SWEEP_BACK, Phase::HOLD_REST};
+
+// config.h's angles, from PRE-FIRE with darts left after it; the last dart (no chambering).
+const uint32_t kOut = sweepFor(spanOf(kFire, kPre));
+const uint32_t kCount = countMs(Shot());
+const uint32_t kShot = totalMs(Shot());
+Shot lastShot() {
+  Shot s;
+  s.chamber = false;
+  return s;
+}
+const uint32_t kLast = totalMs(lastShot());
+const Phase kFirst = kOut ? Phase::SWEEP_OUT : Phase::HOLD_FIRE;   // a shot's first phase
+const Phase kShotPhases[] = {Phase::SWEEP_OUT, Phase::HOLD_FIRE,     Phase::SWEEP_BACK,  Phase::HOLD_REST,
+                             Phase::SWEEP_CLEAR, Phase::HOLD_CLEAR,   Phase::SWEEP_RACK,  Phase::HOLD_RACK,
+                             Phase::SWEEP_CHAMBER, Phase::HOLD_CHAMBER};
 const char* phaseName(Phase p) {
   switch (p) {
     case Phase::IDLE: return "IDLE";
@@ -85,6 +158,12 @@ const char* phaseName(Phase p) {
     case Phase::HOLD_FIRE: return "HOLD_FIRE";
     case Phase::SWEEP_BACK: return "SWEEP_BACK";
     case Phase::HOLD_REST: return "HOLD_REST";
+    case Phase::SWEEP_CLEAR: return "SWEEP_CLEAR";
+    case Phase::HOLD_CLEAR: return "HOLD_CLEAR";
+    case Phase::SWEEP_RACK: return "SWEEP_RACK";
+    case Phase::HOLD_RACK: return "HOLD_RACK";
+    case Phase::SWEEP_CHAMBER: return "SWEEP_CHAMBER";
+    case Phase::HOLD_CHAMBER: return "HOLD_CHAMBER";
   }
   return "?";
 }
@@ -97,16 +176,29 @@ Trigger::Input in(bool armed, bool pulled, bool ready = true) {
   return i;
 }
 
-// A booted host, a Trigger begun with its servo powered (as TurretState does on leaving OFF).
+// A booted host, a Trigger begun with its servo powered (as TurretState does on leaving OFF) and,
+// unless `loaded` is false, X pressed (MAG_CAPACITY, servo at PRE-FIRE) and its chambering over.
 struct Rig {
   Trigger t;
   uint32_t now = 1000;
-  explicit Rig(const Trigger::Config& c = Trigger::defaults()) : t(c) {
+  uint32_t shot;   // one shot's whole sequence at this Config's rate and config.h's angles
+  explicit Rig(const Trigger::Config& c = Trigger::defaults(), bool loaded = true) : t(c) {
+    Shot s;
+    s.rate = c.sweepDegPerS;
+    s.clearStop = c.clearStop;
+    shot = totalMs(s);
     hal_host::reset();
     hal::begin();
     t.begin();
     t.setServoPower(true);
+    if (loaded) load();
   }
+  // X, then the chambering waited out (it starts at the next update and lasts TRIGGER_CHAMBER_MS).
+  void load() {
+    t.resetMagazine();
+    settle();
+  }
+  void settle() { run(kChamber + 1, in(false, false)); }
   // One update at the current time.
   void step(const Trigger::Input& i) { t.update(now, i); }
   // Updates every millisecond for `ms` ms (the first one at now + 1).
@@ -116,17 +208,19 @@ struct Rig {
       t.update(now, i);
     }
   }
-  // Fires `n` semi strokes, each pulled, held to completion, released and the cooldown waited out.
+  // Fires `n` semi shots, each pulled, held to the sequence's end, released and the cooldown waited out.
   void fireSemi(int n) {
     for (int k = 0; k < n; k++) {
       step(in(true, true));
-      run(kStroke, in(true, true));
+      run(shot, in(true, true));
       run(1, in(true, false));
       run(kCool, in(true, false));
     }
   }
-  bool servoAtFire() const { return servoLogical() == (float)TRIGGER_FIRE_ANGLE; }
-  bool servoAtRest() const { return servoLogical() == (float)TRIGGER_REST_ANGLE; }
+  bool servoAtFire() const { return servoLogical() == kFire; }
+  bool servoAtRest() const { return servoLogical() == kRest; }
+  bool servoAtPrefire() const { return servoLogical() == kPre; }
+  bool servoAtHome() const { return servoLogical() == (t.ammo() > 0 ? kPre : kRest); }
 };
 
 Trigger::Config cfg(bool lockout, bool requiresFly, bool continuous) {
@@ -139,6 +233,28 @@ Trigger::Config cfg(bool lockout, bool requiresFly, bool continuous) {
 
 // Lockout on and the flywheel gate on, whatever config.h ships: the tests that rely on either.
 Trigger::Config strict() { return cfg(true, true, RUMBLE_FULL_AUTO_CONTINUOUS); }
+// config.h's switches at another rate: 0 (jump), config.h's, or a test glide.
+Trigger::Config rated(float rate, bool clear = TRIGGER_CLEAR_ENABLED) {
+  Trigger::Config c = Trigger::defaults();
+  c.sweepDegPerS = rate;
+  c.clearStop = clear;
+  return c;
+}
+Shot shotAt(float rate, bool clear = TRIGGER_CLEAR_ENABLED) {
+  Shot s;
+  s.rate = rate;
+  s.clearStop = clear;
+  return s;
+}
+Trigger::Config gliding() { return rated(kTestRate); }
+Shot glidingShot() { return shotAt(kTestRate); }
+// Every rate with and without the CLEAR visit (TRIGGER_CLEAR_ENABLED either way).
+struct Variant {
+  float rate;
+  bool clear;
+};
+const Variant kVariants[] = {{0.0f, false}, {kRate, false}, {kTestRate, false},
+                             {0.0f, true},  {kRate, true},  {kTestRate, true}};
 
 // One stroke as it happened: the commanded angle (config.h terms) and the phase after the
 // update that started it (index 0) and after every later millisecond, until idle again.
@@ -167,37 +283,34 @@ Trace traceStroke(Rig& r, const Trigger::Input& i, uint32_t maxMs, Start start) 
   return tr;
 }
 
-// The stroke shape (Trigger.h): from `from` a sweep at `rate` to `fire`, `fire` exactly for
-// TRIGGER_FORWARD_MS, a sweep back to `rest`, `rest` exactly for TRIGGER_RETURN_MS, then idle.
-// Every sweep step is the rate's distance from the sweep's start, monotonic, never past its end.
-bool strokeShapeIs(const Trace& tr, float from, float fire, float rest, float rate = kRate) {
-  const uint32_t out = sweepFor(spanOf(fire, from), rate);
-  const uint32_t back = sweepFor(spanOf(rest, fire), rate);
-  const size_t total = out + kFwd + back + kRet;
+// The sequence shape (segments): every sweep step is the rate's distance from the sweep's start,
+// monotonic, never past its end; every hold exactly its angle for its time; then idle at the end.
+bool strokeShapeIs(const Trace& tr, const Shot& s) {
+  const std::vector<Seg> segs = segments(s);
+  const size_t total = totalMs(s);
   bool ok = tr.deg.size() == total + 1 && tr.halAgrees;
   if (!CHECK(ok)) {
     std::printf("      stroke lasted %zu ms, expected %zu; HAL agreed: %d\n", tr.deg.size() - 1, total, tr.halAgrees);
     return false;
   }
-  for (size_t k = 0; k <= total && ok; k++) {
-    const float d = tr.deg[k];
-    if (k < out) {   // sweeping out: k ms after the start
-      ok = tr.phase[k] == Phase::SWEEP_OUT && std::fabs(d - sweptTo(from, fire, (uint32_t)k, rate)) <= kDegTol &&
-           spanOf(d, fire) > 0.0f && spanOf(d, from) < spanOf(fire, from);
-      if (k > 0) ok = ok && spanOf(d, fire) < spanOf(tr.deg[k - 1], fire);   // strictly toward FIRE
-    } else if (k < out + kFwd) {
-      ok = tr.phase[k] == Phase::HOLD_FIRE && d == fire;   // landed exactly, held
-    } else if (k < out + kFwd + back) {
-      const uint32_t j = (uint32_t)(k - out - kFwd);
-      ok = tr.phase[k] == Phase::SWEEP_BACK && std::fabs(d - sweptTo(fire, rest, j, rate)) <= kDegTol &&
-           spanOf(d, rest) > 0.0f && spanOf(d, fire) < spanOf(rest, fire);
-      if (j > 0) ok = ok && spanOf(d, rest) < spanOf(tr.deg[k - 1], rest);   // strictly toward REST
-    } else if (k < total) {
-      ok = tr.phase[k] == Phase::HOLD_REST && d == rest;
-    } else {
-      ok = tr.phase[k] == Phase::IDLE && d == rest;
+  size_t k = 0;
+  for (const Seg& g : segs) {
+    for (uint32_t j = 0; j < g.len && ok; j++, k++) {
+      const float d = tr.deg[k];
+      if (g.sweep) {
+        ok = tr.phase[k] == g.phase && std::fabs(d - sweptTo(g.from, g.to, j, s.rate)) <= kDegTol &&
+             spanOf(d, g.to) > 0.0f && spanOf(d, g.from) < spanOf(g.to, g.from);
+        if (j > 0) ok = ok && spanOf(d, g.to) < spanOf(tr.deg[k - 1], g.to);   // strictly toward its end
+      } else {
+        ok = tr.phase[k] == g.phase && d == g.to;   // landed exactly, held
+      }
+      if (!ok) std::printf("      stroke shape broken at %zu ms: %s at %.4f\n", k, phaseName(tr.phase[k]), (double)d);
     }
-    if (!ok) std::printf("      stroke shape broken at %zu ms: %s at %.4f\n", k, phaseName(tr.phase[k]), (double)d);
+    if (!ok) break;
+  }
+  if (ok) {
+    ok = tr.phase[total] == Phase::IDLE && tr.deg[total] == endDeg(s);
+    if (!ok) std::printf("      not idle at %.4f after %zu ms\n", (double)tr.deg[total], total);
   }
   return CHECK(ok);
 }
@@ -211,27 +324,45 @@ TEST(defaults_come_from_config_h) {
   CHECK_EQ(c.rumbleFullAutoContinuous, RUMBLE_FULL_AUTO_CONTINUOUS);
   CHECK_EQ(c.sweepDegPerS, TRIGGER_SWEEP_DEG_PER_S);
   CHECK_EQ(c.semiCooldownMs, (uint32_t)TRIGGER_COOLDOWN_MS);
+  CHECK_EQ(c.clearStop, TRIGGER_CLEAR_ENABLED);
   // The sweep rule agrees with the plain arithmetic for config.h's whole-degree angles.
   if (kRate > 0.0f)
-    CHECK_EQ(kSweep, (uint32_t)std::ceil(std::fabs((double)TRIGGER_FIRE_ANGLE - (double)TRIGGER_REST_ANGLE) *
-                                         (double)MS_PER_S / (double)kRate));
-  std::printf("info stroke at config.h angles: sweep %u ms each way, stroke %u ms, semi cycle %u ms\n",
-              (unsigned)kSweep, (unsigned)kStroke, (unsigned)(kStroke + kCool));
+    CHECK_EQ(kOut, (uint32_t)std::ceil(std::fabs((double)kFire - (double)kPre) * (double)MS_PER_S / (double)kRate));
+  CHECK_EQ(kShot, kLast + sweepFor(spanOf(kRest, kPre)) + kChamber);
+  const uint32_t atRest = kOut + kFwd + sweepFor(spanOf(kRest, kFire));
+  std::printf("info shot at config.h angles, CLEAR %s (ms from the pull): at FIRE %u, leaves %u, at REST %u, "
+              "counts %u, at PRE-FIRE %u, next shot %u (last dart ends at REST at %u), semi cycle %u\n",
+              TRIGGER_CLEAR_ENABLED ? "on" : "off", (unsigned)kOut, (unsigned)(kOut + kFwd), (unsigned)atRest,
+              (unsigned)kCount, (unsigned)(kShot - kChamber), (unsigned)kShot, (unsigned)kLast,
+              (unsigned)(kShot + kCool));
+  Shot burst;
+  burst.from = kRest;
+  burst.chamber = false;
+  std::printf("info full auto: first shot counts %u, then one shot every %u (REST -> FIRE -> REST), after "
+              "the release + %u to PRE-FIRE\n",
+              (unsigned)kLast, (unsigned)totalMs(burst), (unsigned)(kShot - kLast));
+  Shot other;
+  other.clearStop = !TRIGGER_CLEAR_ENABLED;
+  std::printf("info with CLEAR %s: counts %u, next shot %u\n", other.clearStop ? "on" : "off",
+              (unsigned)countMs(other), (unsigned)totalMs(other));
 }
 
-TEST(begin_parks_the_servo_at_rest_with_a_full_magazine) {
+TEST(begin_parks_the_servo_at_home_with_the_boot_ammo) {
   hal_host::reset();
   hal::begin();
   Trigger t;
   t.begin();
   CHECK(!hal_host::servoOn());
-  CHECK_EQ(servoLogical(), (float)TRIGGER_REST_ANGLE);
+  CHECK_EQ(t.ammo(), (uint8_t)TRIGGER_AMMO_AT_BOOT);
+  CHECK_EQ(servoLogical(), TRIGGER_AMMO_AT_BOOT > 0 ? kPre : kRest);   // config.h: 0, REST
+  CHECK_EQ(t.homeDeg(), TRIGGER_AMMO_AT_BOOT > 0 ? kPre : kRest);
   CHECK_EQ(t.phase(), Phase::IDLE);
-  CHECK_EQ(t.ammo(), MAG_CAPACITY);
   CHECK_EQ(t.capacity(), MAG_CAPACITY);
   CHECK_EQ(t.shotsTotal(), 0);
   CHECK_EQ(t.fireMode(), DS_FIRE_MODE_SEMI);
   CHECK(!t.coolingDown());
+  CHECK(!t.chambering());
+  CHECK_EQ(t.prefireDeg(), kPre);
   // Unpowered servo: armed and ready still cannot fire.
   CHECK_EQ(t.gate(in(true, true)), Trigger::Gate::SERVO_OFF);
   t.update(1000, in(true, false));
@@ -239,77 +370,195 @@ TEST(begin_parks_the_servo_at_rest_with_a_full_magazine) {
   CHECK(!t.strokeActive());
   t.setServoPower(true);
   CHECK(hal_host::servoOn());
-  CHECK_EQ(servoLogical(), (float)TRIGGER_REST_ANGLE);
-  CHECK_EQ(t.gate(in(true, true)), Trigger::Gate::OPEN);
+  CHECK_EQ(servoLogical(), TRIGGER_AMMO_AT_BOOT > 0 ? kPre : kRest);
+  const bool empty = TRIGGER_AMMO_AT_BOOT == 0 && FIRE_LOCKOUT_WHEN_EMPTY;
+  CHECK_EQ(t.gate(in(true, true)), empty ? Trigger::Gate::EMPTY : Trigger::Gate::OPEN);
 }
 
-// The whole stroke at config.h's angles, ms by ms: sweep out, FIRE held, sweep back, REST held;
-// the magazine and the shot counter change exactly once, at the completing update, never before.
-TEST(one_stroke_timeline_exactly_and_ammo_only_at_completion) {
+// X: ammo MAG_CAPACITY and the servo to PRE-FIRE at once; no shot until it has had
+// TRIGGER_CHAMBER_MS to arrive (from the next update), a held pull then fires.
+TEST(reload_moves_to_prefire_and_chambers_before_a_shot) {
+  Rig r(strict(), false);
+  r.step(in(true, false));
+  CHECK(r.servoAtRest());
+  CHECK_EQ(r.t.gate(in(true, true)), Trigger::Gate::EMPTY);
+  r.t.resetMagazine();
+  CHECK_EQ(r.t.ammo(), (uint8_t)MAG_CAPACITY);
+  CHECK(r.servoAtPrefire());                       // in that very call
+  CHECK_EQ(r.t.gate(in(true, true)), Trigger::Gate::CHAMBERING);
+  r.run(1, in(true, true));                        // pulled: the chambering starts at this update
+  const uint32_t t0 = r.now;
+  bool early = false;
+  while (r.now < t0 + kChamber - 1) {
+    r.run(1, in(true, true));
+    early = early || r.t.strokeActive();
+  }
+  CHECK(!early);
+  CHECK_EQ(r.t.gate(in(true, true)), Trigger::Gate::CHAMBERING);
+  r.run(1, in(true, true));                        // t0 + TRIGGER_CHAMBER_MS: fires
+  CHECK(r.t.strokeActive());
+  CHECK(!r.t.chambering());
+  // X again at PRE-FIRE (nothing moves): no chambering. X mid-stroke: the stroke carries on.
+  r.run(kShot, in(true, false));
+  r.run(kCool, in(true, false));
+  r.t.resetMagazine();
+  CHECK(!r.t.chambering());
+  r.run(1, in(true, true));
+  CHECK(r.t.strokeActive());
+  r.run(kOut + kFwd / 2, in(true, true));
+  CHECK(r.servoAtFire());
+  r.t.resetMagazine();
+  CHECK(r.servoAtFire());                          // not pulled back mid-stroke
+  CHECK_EQ(r.t.phase(), Phase::HOLD_FIRE);
+  r.run(kShot, in(true, true));
+  CHECK_EQ(r.t.ammo(), (uint8_t)(MAG_CAPACITY - 1));   // counted against the new magazine
+  CHECK(r.servoAtPrefire());
+}
+
+// Power-toggle reboot: TRIGGER_AMMO_AT_BOOT and home (REST at 0), a running stroke aborted.
+TEST(boot_magazine_empties_and_goes_home) {
   Rig r;
   r.step(in(true, false));
-  r.now = 5000;
-  const uint32_t t0 = r.now;
-  const Trace tr = traceStroke(r, in(true, true), 2 * kStroke, [&] { r.step(in(true, true)); });
-  CHECK(strokeShapeIs(tr, TRIGGER_REST_ANGLE, TRIGGER_FIRE_ANGLE, TRIGGER_REST_ANGLE));
-  CHECK_EQ(r.now, t0 + kStroke);
-  bool fullUntilTheEnd = tr.ammo.size() == kStroke + 1;
-  for (size_t k = 0; k + 1 < tr.ammo.size(); k++) fullUntilTheEnd = fullUntilTheEnd && tr.ammo[k] == MAG_CAPACITY;
-  CHECK(fullUntilTheEnd);                        // not one ms early, not mid hold
-  CHECK_EQ(r.t.phase(), Phase::IDLE);
-  CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 1);
-  CHECK_EQ(r.t.shotsTotal(), 1);
-  CHECK(r.servoAtRest());
-  CHECK_EQ(r.t.strokeMs(), kStroke);             // what the module reports for rumble / docs
-  CHECK_EQ(r.t.sweepMs(TRIGGER_REST_ANGLE, TRIGGER_FIRE_ANGLE), kSweep);
-  CHECK_EQ(r.t.sweepMs(TRIGGER_FIRE_ANGLE, TRIGGER_REST_ANGLE), kSweep);
+  r.run(1, in(true, true));
+  r.run(kOut + kFwd / 2, in(true, true));
+  CHECK(r.servoAtFire());
+  r.t.bootMagazine();
+  CHECK(!r.t.strokeActive());
+  CHECK_EQ(r.t.ammo(), (uint8_t)TRIGGER_AMMO_AT_BOOT);
+  CHECK(r.servoAtHome());
+  CHECK_EQ(r.t.shotsTotal(), 0);
 }
 
-// The sweep for either sign of FIRE - REST, the worst-case span and a short one: at the configured
-// rate, monotonic, landing exactly on FIRE and REST, each hold its configured time.
-TEST(sweep_glides_at_the_rate_for_either_direction_and_lands_exactly) {
-  struct Angles {
-    float rest, fire;
-  };
-  const Angles cases[] = {{TRIGGER_REST_ANGLE, TRIGGER_FIRE_ANGLE},
-                          {TRIGGER_FIRE_ANGLE, TRIGGER_REST_ANGLE},
-                          {0.0f, (float)SERVO_SPAN_DEG},
-                          {(float)SERVO_SPAN_DEG, 0.0f},
-                          {90.0f, 93.0f}};
-  for (const Angles& a : cases) {
-    Rig r;
-    r.t.setAngles(a.rest, a.fire);
-    r.t.abort();                                   // the servo to this REST first
-    CHECK_EQ(servoLogical(), a.rest);
+// One shot at config.h's angles, ms by ms (no glide: each angle at once): FIRE held
+// TRIGGER_FORWARD_MS, REST held TRIGGER_RETURN_MS, [with the CLEAR visit: CLEAR held
+// TRIGGER_CLEAR_HOLD_MS, REST held TRIGGER_RETURN_MS again,] the shot counts, PRE-FIRE held
+// TRIGGER_CHAMBER_MS, then the next shot is available.
+TEST(one_shot_exact_timeline_without_a_glide) {
+  for (const bool clear : {false, true}) {
+    Rig r(rated(0.0f, clear));
+    const uint32_t count = kFwd + kRet + (clear ? kClearHold + kRet : 0u), shot = count + kChamber;
     r.step(in(true, false));
-    const Trace tr = traceStroke(r, in(true, true), 4 * MS_PER_S, [&] { r.step(in(true, true)); });
-    CHECK(strokeShapeIs(tr, a.rest, a.fire, a.rest));
+    CHECK(r.servoAtPrefire());
+    r.run(1, in(true, true));                        // t0
+    const uint32_t t0 = r.now;
+    CHECK_EQ(r.t.phase(), Phase::HOLD_FIRE);         // FIRE in the update that starts the shot
+    CHECK(r.servoAtFire());
+    r.run(kFwd - 1, in(true, true));
+    CHECK(r.servoAtFire());
+    r.run(1, in(true, true));                        // t0 + 180
+    CHECK_EQ(r.now, t0 + kFwd);
+    CHECK_EQ(r.t.phase(), Phase::HOLD_REST);
+    CHECK(r.servoAtRest());
+    if (clear) {
+      r.run(kRet, in(true, true));                   // t0 + 360: CLEAR
+      CHECK_EQ(r.t.phase(), Phase::HOLD_CLEAR);
+      CHECK_EQ(servoLogical(), kClear);
+      CHECK_EQ(r.t.ammo(), (uint8_t)MAG_CAPACITY);
+      r.run(kClearHold - 1, in(true, true));
+      CHECK_EQ(servoLogical(), kClear);
+      r.run(1, in(true, true));                      // t0 + 460: REST again
+      CHECK_EQ(r.t.phase(), Phase::HOLD_RACK);
+      CHECK(r.servoAtRest());
+      r.run(kRet - 1, in(true, true));
+    } else {
+      r.run(kRet - 1, in(true, true));
+      CHECK_EQ(r.t.phase(), Phase::HOLD_REST);
+    }
+    CHECK_EQ(r.t.ammo(), (uint8_t)MAG_CAPACITY);     // not one ms early
+    r.run(1, in(true, true));                        // counted, PRE-FIRE commanded
+    CHECK_EQ(r.now, t0 + count);
+    CHECK_EQ(r.t.ammo(), (uint8_t)(MAG_CAPACITY - 1));
     CHECK_EQ(r.t.shotsTotal(), 1);
-    CHECK_EQ(r.t.strokeMs(), sweepFor(spanOf(a.fire, a.rest)) * 2 + kFwd + kRet);
+    CHECK_EQ(r.t.phase(), Phase::HOLD_CHAMBER);
+    CHECK(r.servoAtPrefire());
+    r.run(kChamber - 1, in(true, true));
+    CHECK(r.t.strokeActive());
+    CHECK_EQ(r.t.gate(in(true, true)), Trigger::Gate::STROKE_RUNNING);
+    r.run(1, in(true, true));                        // the next shot is available
+    CHECK_EQ(r.now, t0 + shot);
+    CHECK_EQ(r.t.phase(), Phase::IDLE);
+    CHECK(r.t.coolingDown());                        // semi: the cooldown starts here
+    CHECK_EQ(r.t.strokeMs(), shot);
+    CHECK_EQ(r.t.sweepMs(kRest, kFire), 0u);
   }
 }
 
-// TRIGGER_SWEEP_DEG_PER_S 0: no sweep, each angle commanded at once (the old two-step stroke).
-TEST(no_sweep_at_rate_zero_jumps_to_each_angle_as_before) {
-  Trigger::Config c = Trigger::defaults();
-  c.sweepDegPerS = 0.0f;
-  Rig r(c);
-  r.step(in(true, false));
-  r.run(1, in(true, true));
-  CHECK_EQ(r.t.phase(), Phase::HOLD_FIRE);       // FIRE in the update that starts the stroke
-  CHECK(r.servoAtFire());
-  r.run(kFwd - 1, in(true, true));
-  CHECK(r.servoAtFire());
-  r.run(1, in(true, true));
-  CHECK_EQ(r.t.phase(), Phase::HOLD_REST);
-  CHECK(r.servoAtRest());
-  r.run(kRet - 1, in(true, true));
-  CHECK_EQ(r.t.ammo(), MAG_CAPACITY);
-  r.run(1, in(true, true));
-  CHECK_EQ(r.t.phase(), Phase::IDLE);
-  CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 1);
-  CHECK_EQ(r.t.strokeMs(), kFwd + kRet);
-  CHECK_EQ(r.t.sweepMs(TRIGGER_REST_ANGLE, TRIGGER_FIRE_ANGLE), 0u);
+// The whole sequence through the trace (both rates), and the magazine changing exactly once, at
+// the end of the second REST hold.
+TEST(one_shot_shape_and_ammo_only_where_it_counts) {
+  for (const Variant v : kVariants) {
+    const float rate = v.rate;
+    const bool clear = v.clear;
+    Rig r(rated(rate, clear));
+    const Shot s = shotAt(rate, clear);
+    r.step(in(true, false));
+    r.now = 5000;
+    const uint32_t t0 = r.now;
+    const Trace tr = traceStroke(r, in(true, true), 4 * MS_PER_S, [&] { r.step(in(true, true)); });
+    CHECK(strokeShapeIs(tr, s));
+    CHECK_EQ(r.now, t0 + totalMs(s));
+    bool once = tr.ammo.size() == totalMs(s) + 1;
+    for (size_t k = 0; k < tr.ammo.size(); k++)
+      once = once && tr.ammo[k] == (k < countMs(s) ? MAG_CAPACITY : MAG_CAPACITY - 1);
+    CHECK(once);
+    CHECK_EQ(r.t.shotsTotal(), 1);
+    CHECK(r.servoAtPrefire());
+    CHECK_EQ(r.t.strokeMs(), totalMs(s));         // what the module reports for rumble / docs
+  }
+}
+
+// The last dart: counted at the end of the pause, then the servo stays at REST (the reload
+// position) and the sequence is over at once.
+TEST(the_last_dart_stays_at_rest) {
+  for (const Variant v : kVariants) {
+    const float rate = v.rate;
+    const bool clear = v.clear;
+    Rig r(rated(rate, clear));
+    Shot s = shotAt(rate, clear);
+    s.chamber = false;
+    r.step(in(true, false));
+    r.fireSemi(MAG_CAPACITY - 1);
+    CHECK_EQ(r.t.ammo(), 1);
+    CHECK(r.servoAtPrefire());
+    const Trace tr = traceStroke(r, in(true, true), 4 * MS_PER_S, [&] { r.step(in(true, true)); });
+    CHECK(strokeShapeIs(tr, s));
+    CHECK_EQ(r.t.ammo(), 0);
+    CHECK(r.servoAtRest());
+    r.run(kShot + kCool, in(true, true));
+    CHECK(r.servoAtRest());
+  }
+}
+
+// The sweep for either sign of the angles, the worst-case span and short ones: at the configured
+// rate, monotonic, landing exactly on each angle, each hold its configured time.
+TEST(sweep_glides_at_the_rate_for_either_direction_and_lands_exactly) {
+  struct Angles {
+    float rest, fire, prefire, clear;
+  };
+  const Angles cases[] = {{kRest, kFire, kPre, kClear},
+                          {kFire, kRest, (kFire + kRest) / 2.0f, kFire + 10.0f},
+                          {0.0f, (float)SERVO_SPAN_DEG, 90.0f, (float)SERVO_SPAN_DEG},
+                          {(float)SERVO_SPAN_DEG, 0.0f, (float)SERVO_SPAN_DEG, 0.0f},
+                          {90.0f, 93.0f, 91.0f, 90.0f}};
+  for (const Angles& a : cases) {
+    Rig r(gliding());
+    r.t.setAngles(a.rest, a.fire, a.prefire, a.clear);
+    r.t.abort();                                   // the servo to this PRE-FIRE first
+    CHECK_EQ(servoLogical(), a.prefire);
+    r.settle();
+    r.step(in(true, false));
+    const Trace tr = traceStroke(r, in(true, true), 4 * MS_PER_S, [&] { r.step(in(true, true)); });
+    Shot s = glidingShot();
+    s.from = a.prefire;
+    s.rest = a.rest;
+    s.fire = a.fire;
+    s.prefire = a.prefire;
+    s.clear = a.clear;
+    CHECK(strokeShapeIs(tr, s));
+    CHECK_EQ(r.t.shotsTotal(), 1);
+    CHECK_EQ(r.t.strokeMs(), totalMs(s));
+    CHECK_EQ(r.t.sweepMs(a.rest, a.fire), sweepFor(spanOf(a.fire, a.rest), kTestRate));
+  }
 }
 
 TEST(semi_one_stroke_per_pull_and_held_trigger_does_not_refire) {
@@ -319,14 +568,14 @@ TEST(semi_one_stroke_per_pull_and_held_trigger_does_not_refire) {
   CHECK(r.t.strokeActive());
   int starts = 0;
   bool wasActive = true;
-  for (uint32_t k = 0; k < 10 * (kStroke + kCool); k++) {   // held across the stroke's end and long after
+  for (uint32_t k = 0; k < 10 * (kShot + kCool); k++) {   // held across the sequence's end and long after
     r.run(1, in(true, true));
     if (r.t.strokeActive() && !wasActive) starts++;
     wasActive = r.t.strokeActive();
   }
   CHECK_EQ(starts, 0);
   CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 1);
-  CHECK(r.servoAtRest());
+  CHECK(r.servoAtPrefire());
 }
 
 TEST(semi_release_rearms_and_each_pull_costs_exactly_one_dart) {
@@ -335,7 +584,7 @@ TEST(semi_release_rearms_and_each_pull_costs_exactly_one_dart) {
   for (int k = 1; k <= 3; k++) {
     r.run(1, in(true, true));
     CHECK(r.t.strokeActive());
-    r.run(kStroke, in(true, true));
+    r.run(kShot, in(true, true));
     CHECK(!r.t.strokeActive());
     CHECK_EQ(r.t.ammo(), MAG_CAPACITY - k);
     r.run(5, in(true, false));                    // released below the release threshold
@@ -344,9 +593,9 @@ TEST(semi_release_rearms_and_each_pull_costs_exactly_one_dart) {
   CHECK_EQ(r.t.shotsTotal(), 3);
 }
 
-// Semi cooldown: after a stroke completes, nothing starts for TRIGGER_COOLDOWN_MS (gate COOLDOWN);
-// a counting pull still held when it ends fires in that very update, also one that started
-// during the stroke itself.
+// Semi cooldown: counted from the end of the sequence (the next shot would be available),
+// nothing starts for TRIGGER_COOLDOWN_MS (gate COOLDOWN); a counting pull still held when it ends
+// fires in that very update, also one that started during the stroke itself.
 TEST(semi_cooldown_a_held_pull_fires_the_moment_it_ends) {
   for (int when = 0; when < 2; when++) {             // re-pulled during the stroke / the cooldown
     Rig r;
@@ -354,14 +603,14 @@ TEST(semi_cooldown_a_held_pull_fires_the_moment_it_ends) {
     r.run(1, in(true, true));
     const uint32_t t0 = r.now;
     if (when == 0) {
-      r.run(kStroke / 2, in(true, true));
+      r.run(kShot / 2, in(true, true));
       r.run(10, in(true, false));                    // released mid-stroke
-      r.run(t0 + kStroke - r.now, in(true, true));   // pulled again, held to the completion
+      r.run(t0 + kShot - r.now, in(true, true));     // pulled again, held to the end
     } else {
-      r.run(kStroke, in(true, true));
+      r.run(kShot, in(true, true));
     }
-    CHECK_EQ(r.now, t0 + kStroke);
-    CHECK_EQ(r.t.phase(), Phase::IDLE);              // completed ...
+    CHECK_EQ(r.now, t0 + kShot);
+    CHECK_EQ(r.t.phase(), Phase::IDLE);              // over ...
     CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 1);
     CHECK(r.t.coolingDown());                        // ... and cooling down
     CHECK_EQ(r.t.gate(in(true, true)), Trigger::Gate::COOLDOWN);
@@ -371,19 +620,19 @@ TEST(semi_cooldown_a_held_pull_fires_the_moment_it_ends) {
       r.run(1, in(true, true));                      // ... and pulled inside the cooldown
     }
     bool early = false;
-    while (r.now < t0 + kStroke + kCool - 1) {
+    while (r.now < t0 + kShot + kCool - 1) {
       r.run(1, in(true, true));
       early = early || r.t.strokeActive();
     }
     CHECK(!early);
     CHECK_EQ(r.t.gate(in(true, true)), Trigger::Gate::COOLDOWN);
-    r.run(1, in(true, true));                        // completion + TRIGGER_COOLDOWN_MS
-    CHECK_EQ(r.t.phase(), kSweep ? Phase::SWEEP_OUT : Phase::HOLD_FIRE);
+    r.run(1, in(true, true));                        // end + TRIGGER_COOLDOWN_MS
+    CHECK_EQ(r.t.phase(), kFirst);
     CHECK(!r.t.coolingDown());
-    CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 1);          // the new stroke has not completed yet
-    r.run(kStroke, in(true, true));
+    CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 1);          // the new shot has not counted yet
+    r.run(kShot, in(true, true));
     CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 2);
-    r.run(3 * (kStroke + kCool), in(true, true));    // held on: no third
+    r.run(3 * (kShot + kCool), in(true, true));      // held on: no third
     CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 2);
   }
 }
@@ -397,15 +646,15 @@ TEST(semi_cooldown_a_tap_inside_it_never_fires) {
     r.run(1, in(true, true));
     const uint32_t t0 = r.now;
     if (when == 0) {
-      r.run(kStroke + 1, in(true, false));           // released, stroke completes
+      r.run(kShot + 1, in(true, false));             // released, the sequence ends
       r.run(kCool / 4, in(true, true));              // a tap inside the cooldown
       r.run(1, in(true, false));
     } else {
-      r.run(kStroke / 2, in(true, false));
-      r.run(t0 + kStroke + kCool - 1 - r.now, in(true, true));   // re-pulled, let go 1 ms early
+      r.run(kShot / 2, in(true, false));
+      r.run(t0 + kShot + kCool - 1 - r.now, in(true, true));   // re-pulled, let go 1 ms early
       r.run(1, in(true, false));
     }
-    r.run(3 * (kStroke + kCool), in(true, false));
+    r.run(3 * (kShot + kCool), in(true, false));
     CHECK(!r.t.strokeActive());
     CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 1);
     CHECK_EQ(r.t.shotsTotal(), 1);
@@ -414,27 +663,28 @@ TEST(semi_cooldown_a_tap_inside_it_never_fires) {
   }
 }
 
-// Only a completed real stroke starts a cooldown: not begin(), not an aborted stroke, not a
+// Only a real shot's sequence starts a cooldown: not begin(), not an aborted stroke, not a
 // teach-mode test stroke.
-TEST(cooldown_starts_only_when_a_real_stroke_completes) {
+TEST(cooldown_starts_only_after_a_real_shot) {
   Rig r;
   CHECK_EQ(r.t.gate(in(true, false)), Trigger::Gate::OPEN);
   r.step(in(true, false));
   r.run(1, in(true, true));
-  r.run(kStroke - 1, in(true, true));               // its last ms
+  r.run(kCount - 1, in(true, true));                // the last ms before the shot counts
   CHECK(r.t.strokeActive());
   r.t.abort();
   CHECK(!r.t.coolingDown());
-  r.run(1, in(true, false));
+  CHECK_EQ(r.t.shotsTotal(), 0);
+  r.run(kChamber + 1, in(true, false));             // back to PRE-FIRE: chambering
   r.run(1, in(true, true));                         // fires at once
   CHECK(r.t.strokeActive());
   r.t.abort();
-  // A test stroke run to completion.
+  // A test stroke run to its end.
   Trigger::Input teach;
   teach.servoTeach = true;
-  r.run(1, teach);
+  r.run(kChamber + 1, teach);
   CHECK(r.t.testStroke(r.now, teach));
-  r.run(kStroke, teach);
+  r.run(kShot, teach);
   CHECK(!r.t.strokeActive());
   CHECK(!r.t.coolingDown());
   r.run(1, in(true, false));
@@ -443,62 +693,111 @@ TEST(cooldown_starts_only_when_a_real_stroke_completes) {
   CHECK_EQ(r.t.shotsTotal(), 0);
 }
 
-TEST(full_auto_back_to_back_with_no_gap_and_release_finishes_the_stroke) {
-  Rig r;
-  r.t.setFireMode(DS_FIRE_MODE_FULL);
-  CHECK_EQ(r.t.cooldownMs(), 0u);
-  r.step(in(true, false));
-  std::vector<uint32_t> starts;
-  bool everIdleWhileHeld = false, everCooldown = false;
-  Phase was = Phase::IDLE;
-  const Phase first = kSweep ? Phase::SWEEP_OUT : Phase::HOLD_FIRE;   // a stroke's first phase
-  auto watch = [&] {
-    const Phase p = r.t.phase();
-    if (p == first && was != first) starts.push_back(r.now);
-    was = p;
-    everCooldown = everCooldown || r.t.coolingDown() || r.t.gate(in(true, true)) == Trigger::Gate::COOLDOWN;
-  };
-  r.run(1, in(true, true));
-  watch();
-  const uint32_t t0 = r.now;
-  while (r.now < t0 + 3 * kStroke + kStroke / 4) {   // three strokes and a quarter of the fourth
+// Full auto (owner, 2026-11-04), an exact 3-shot burst and the release, for every rate with and
+// without CLEAR: shot 1 from PRE-FIRE; while held, each next shot starts in the very update its
+// predecessor's last REST hold ends (the dart counted), straight from REST, never visiting
+// PRE-FIRE or holding the chamber; released during shot 3, that shot finishes to REST, counts,
+// then chambers to PRE-FIRE and the sequence ends. No cooldown anywhere.
+TEST(full_auto_burst_goes_rest_to_fire_and_chambers_only_after_the_release) {
+  for (const Variant v : kVariants) {
+    Rig r(rated(v.rate, v.clear));
+    r.t.setFireMode(DS_FIRE_MODE_FULL);
+    CHECK_EQ(r.t.cooldownMs(), 0u);
+    Shot first = shotAt(v.rate, v.clear);
+    first.chamber = false;                        // PRE-FIRE -> ... -> the count at REST
+    Shot next = first;
+    next.from = kRest;                            // REST -> FIRE -> ... -> the count at REST
+    const uint32_t firstMs = totalMs(first), cycleMs = totalMs(next);
+    const uint32_t tailMs = sweepFor(spanOf(kPre, kRest), v.rate) + kChamber;   // REST -> PRE-FIRE, held
+    const Phase head = sweepFor(spanOf(kFire, kPre), v.rate) ? Phase::SWEEP_OUT : Phase::HOLD_FIRE;
+    const Phase headNext = sweepFor(spanOf(kFire, kRest), v.rate) ? Phase::SWEEP_OUT : Phase::HOLD_FIRE;
+    r.step(in(true, false));
+    std::vector<uint32_t> starts, counts;
+    std::vector<float> startDeg;
+    bool chamberedWhileHeld = false, idleWhileHeld = false, everCooldown = false;
+    Phase was = Phase::IDLE;
+    uint8_t ammoWas = r.t.ammo();
+    bool held = true;
+    auto watch = [&] {
+      const Phase p = r.t.phase();
+      if ((p == head || p == headNext) && p != was && (was == Phase::IDLE || was == Phase::HOLD_REST ||
+                                                     was == Phase::HOLD_RACK)) {
+        starts.push_back(r.now);
+        startDeg.push_back(r.t.servoDeg());
+      }
+      if (r.t.ammo() != ammoWas) counts.push_back(r.now);
+      ammoWas = r.t.ammo();
+      if (held) {
+        chamberedWhileHeld = chamberedWhileHeld || p == Phase::SWEEP_CHAMBER || p == Phase::HOLD_CHAMBER;
+        idleWhileHeld = idleWhileHeld || !r.t.strokeActive();
+      }
+      everCooldown = everCooldown || r.t.coolingDown();
+      was = p;
+    };
     r.run(1, in(true, true));
-    if (!r.t.strokeActive()) everIdleWhileHeld = true;
+    const uint32_t t0 = r.now;
     watch();
+    // Held through shots 1 and 2 and into shot 3, released before shot 3 counts.
+    const uint32_t releaseAt = t0 + firstMs + cycleMs + cycleMs / 2;
+    while (r.now < releaseAt) {
+      r.run(1, in(true, true));
+      watch();
+    }
+    held = false;
+    while (r.now < releaseAt + 2 * (cycleMs + tailMs)) {
+      r.run(1, in(true, false));
+      watch();
+    }
+    CHECK(!chamberedWhileHeld);
+    CHECK(!idleWhileHeld);
+    CHECK(!everCooldown);
+    if (CHECK_EQ(starts.size(), (size_t)3)) {
+      CHECK_EQ(starts[0], t0);
+      CHECK_EQ(starts[1], t0 + firstMs);
+      CHECK_EQ(starts[2], t0 + firstMs + cycleMs);
+      if (v.rate > 0.0f) {                           // where each stroke's glide set out from
+        CHECK_EQ(startDeg[1], kRest);
+        CHECK_EQ(startDeg[2], kRest);
+      }
+    }
+    if (CHECK_EQ(counts.size(), (size_t)3)) {
+      CHECK_EQ(counts[0], t0 + firstMs);
+      CHECK_EQ(counts[1], t0 + firstMs + cycleMs);
+      CHECK_EQ(counts[2], t0 + firstMs + 2 * cycleMs);   // shot 3 finished after the release
+    }
+    CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 3);
+    CHECK_EQ(r.t.shotsTotal(), 3);
+    CHECK(!r.t.strokeActive());
+    CHECK(r.servoAtPrefire());                       // chambered after the release
+    // The sequence ended exactly one chamber after shot 3 counted.
+    Rig q(rated(v.rate, v.clear));
+    q.t.setFireMode(DS_FIRE_MODE_FULL);
+    q.step(in(true, false));
+    q.run(1, in(true, true));
+    const uint32_t q0 = q.now;
+    q.run(firstMs + cycleMs + cycleMs / 2 - 1, in(true, true));
+    while (q.t.strokeActive()) q.run(1, in(true, false));
+    CHECK_EQ(q.now, q0 + firstMs + 2 * cycleMs + tailMs);
   }
-  CHECK(!everIdleWhileHeld);                        // never a gap between strokes
-  CHECK(!everCooldown);                             // full auto has no cooldown
-  CHECK_EQ(starts.size(), 4u);
-  for (size_t k = 1; k < starts.size(); k++) CHECK_EQ(starts[k] - starts[k - 1], kStroke);
-  CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 3);
-  // Release in the fourth stroke: it finishes, then nothing more.
-  r.run(1, in(true, false));
-  CHECK(r.t.strokeActive());
-  r.run(kStroke, in(true, false));
-  CHECK(!r.t.strokeActive());
-  CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 4);
-  r.run(3 * kStroke, in(true, false));
-  CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 4);
-  CHECK_EQ(r.t.shotsTotal(), 4);
 }
 
-// The cooldown belongs to semi: after a semi stroke, a fresh full-auto pull fires at once; after a
-// full-auto stroke, a fresh semi pull waits out TRIGGER_COOLDOWN_MS from that completion.
+// The cooldown belongs to semi: after a semi shot, a fresh full-auto pull fires at once; after a
+// full-auto shot, a fresh semi pull waits out TRIGGER_COOLDOWN_MS from that sequence's end.
 TEST(the_cooldown_is_semi_only_and_follows_the_mode_in_force) {
   Rig r;
   r.step(in(true, false));
   r.run(1, in(true, true));
-  r.run(kStroke, in(true, true));                   // a semi stroke completes
+  r.run(kShot, in(true, true));                     // a semi shot ends
   CHECK(r.t.coolingDown());
   r.t.setFireMode(DS_FIRE_MODE_FULL);
   r.run(1, in(true, false));
   r.run(1, in(true, true));
   CHECK(r.t.strokeActive());                        // full auto: no cooldown
-  r.run(1, in(true, false));                        // released: this one stroke finishes
-  r.run(kStroke, in(true, false));
+  r.run(1, in(true, false));                        // released: this one shot finishes
+  r.run(kShot, in(true, false));
   CHECK(!r.t.strokeActive());
   CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 2);
-  const uint32_t done = r.now - 1;                   // when it completed (it started 1 ms before the release)
+  const uint32_t done = r.now - 1;                   // when it ended (it started 1 ms before the release)
   r.t.setFireMode(DS_FIRE_MODE_SEMI);
   r.run(1, in(true, true));
   CHECK_EQ(r.t.gate(in(true, true)), Trigger::Gate::COOLDOWN);
@@ -509,49 +808,72 @@ TEST(the_cooldown_is_semi_only_and_follows_the_mode_in_force) {
 }
 
 // KEY SAFETY TEST: an abort in any phase (abort(), armed dropping without an abort() call, the
-// servo powered off) commands REST at once, no sweep, never costs a dart or counts a shot and
-// starts no cooldown; the servo stays at REST afterwards.
-TEST(abort_in_every_phase_rests_now_never_decrements_and_starts_no_cooldown) {
+// servo powered off) commands home (PRE-FIRE with darts left) at once, no sweep, never costs a
+// dart or counts a shot and starts no cooldown; the servo stays home afterwards.
+TEST(abort_in_every_phase_goes_home_now_never_decrements_and_starts_no_cooldown) {
   enum Kind { ABORT_CALL, DISARMED, POWER_OFF, KINDS };
   const char* const kinds[] = {"abort()", "armed false", "servo power off"};
-  for (const Phase p : kStrokePhases) {
-    if (phaseLength(p) == 0) continue;               // no sweep configured: no sweep phases
-    for (uint32_t at : {phaseStart(p) + phaseLength(p) / 2, phaseStart(p) + phaseLength(p) - 1}) {
-      for (int kind = ABORT_CALL; kind < KINDS; kind++) {
-        Rig r;
-        r.step(in(true, false));
-        r.run(1, in(true, true));
-        r.run(at, in(true, true));
-        if (!CHECK_EQ(r.t.phase(), p)) std::printf("      %s at +%u ms, %s\n", phaseName(p), (unsigned)at, kinds[kind]);
-        Trigger::Rumble ignore;
-        r.t.takeRumbleRequest(ignore);
-        if (kind == ABORT_CALL) r.t.abort();
-        if (kind == DISARMED) r.run(1, in(false, true));
-        if (kind == POWER_OFF) r.t.setServoPower(false);
-        CHECK(r.servoAtRest());                      // in that very call: no sweep back
-        CHECK_EQ(r.t.servoDeg(), (float)TRIGGER_REST_ANGLE);
-        CHECK_EQ(r.t.phase(), Phase::IDLE);
-        CHECK_EQ(r.t.ammo(), MAG_CAPACITY);
-        CHECK_EQ(r.t.shotsTotal(), 0);
-        CHECK(!r.t.coolingDown());
-        CHECK(!r.t.firingLedActive(r.now));
-        Trigger::Rumble stop;
-        CHECK(r.t.takeRumbleRequest(stop));          // the stroke's rumble is stopped
-        CHECK_EQ(stop.ms, 0);
-        bool stayedAtRest = true;
-        for (uint32_t k = 0; k < kStroke + kCool; k++) {   // still armed and held (or disarmed)
-          r.run(1, in(kind != DISARMED, true));
-          stayedAtRest = stayedAtRest && r.servoAtRest() && !r.t.strokeActive();
+  for (const Variant v : kVariants) {
+    const float rate = v.rate;
+    const bool clear = v.clear;
+    const Shot s = shotAt(rate, clear);
+    const uint32_t shot = totalMs(s);
+    for (const Phase p : kShotPhases) {
+      if (phaseLength(p, s) == 0) continue;            // no sweep configured: no sweep phases
+      const bool counted = phaseStart(p, s) >= countMs(s);   // the chambering after the count
+      for (uint32_t at : {phaseStart(p, s) + phaseLength(p, s) / 2, phaseStart(p, s) + phaseLength(p, s) - 1}) {
+        for (int kind = ABORT_CALL; kind < KINDS; kind++) {
+          Rig r(rated(rate, clear));
+          r.step(in(true, false));
+          r.run(1, in(true, true));
+          r.run(at, in(true, true));
+          if (!CHECK_EQ(r.t.phase(), p))
+            std::printf("      %s at +%u ms, %s\n", phaseName(p), (unsigned)at, kinds[kind]);
+          const uint8_t ammo = counted ? MAG_CAPACITY - 1 : MAG_CAPACITY;
+          const uint16_t shots = counted ? 1 : 0;
+          Trigger::Rumble ignore;
+          r.t.takeRumbleRequest(ignore);
+          if (kind == ABORT_CALL) r.t.abort();
+          if (kind == DISARMED) r.run(1, in(false, true));
+          if (kind == POWER_OFF) r.t.setServoPower(false);
+          CHECK(r.servoAtPrefire());                   // in that very call: no sweep
+          CHECK_EQ(r.t.servoDeg(), kPre);
+          CHECK_EQ(r.t.phase(), Phase::IDLE);
+          CHECK_EQ(r.t.ammo(), ammo);
+          CHECK_EQ(r.t.shotsTotal(), shots);
+          CHECK(!r.t.coolingDown());
+          CHECK(!r.t.firingLedActive(r.now));
+          Trigger::Rumble stop;
+          CHECK(r.t.takeRumbleRequest(stop));          // the stroke's rumble is stopped
+          CHECK_EQ(stop.ms, 0);
+          bool stayedHome = true;
+          for (uint32_t k = 0; k < shot + kCool; k++) {   // still armed and held (or disarmed)
+            r.run(1, in(kind != DISARMED, true));
+            stayedHome = stayedHome && r.servoAtPrefire() && !r.t.strokeActive();
+          }
+          CHECK(stayedHome);                            // the aborted pull does not restart it
+          CHECK_EQ(r.t.ammo(), ammo);
+          if (kind == POWER_OFF) r.t.setServoPower(true);
+          r.run(1, in(true, false));                    // release and pull: fires again
+          r.run(1, in(true, true));
+          CHECK(r.t.strokeActive());
         }
-        CHECK(stayedAtRest);                          // the aborted pull does not restart it
-        CHECK_EQ(r.t.ammo(), MAG_CAPACITY);
-        if (kind == POWER_OFF) r.t.setServoPower(true);
-        r.run(1, in(true, false));                    // release and pull: fires again
-        r.run(1, in(true, true));
-        CHECK(r.t.strokeActive());
       }
     }
   }
+}
+
+// At ammo 0 home is REST: an abort of a lockout-off dry stroke goes there.
+TEST(abort_at_zero_ammo_goes_to_rest) {
+  Trigger::Config c = cfg(false, FIRE_REQUIRES_FLYWHEEL, RUMBLE_FULL_AUTO_CONTINUOUS);
+  c.sweepDegPerS = 0.0f;
+  Rig r(c, false);
+  r.step(in(true, false));
+  r.run(1, in(true, true));                          // ammo 0, no lockout: a dry stroke
+  CHECK(r.servoAtFire());
+  r.t.abort();
+  CHECK(r.servoAtRest());
+  CHECK_EQ(r.t.ammo(), 0);
 }
 
 TEST(abort_in_full_auto_stops_cycling_until_a_fresh_pull) {
@@ -559,10 +881,10 @@ TEST(abort_in_full_auto_stops_cycling_until_a_fresh_pull) {
   r.t.setFireMode(DS_FIRE_MODE_FULL);
   r.step(in(true, false));
   r.run(1, in(true, true));
-  r.run(kStroke + kStroke / 2, in(true, true));        // into the second stroke
+  r.run(kShot + kCount / 2, in(true, true));           // into the second shot, before it counts
   CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 1);
   r.t.abort();                                         // still armed, still held
-  r.run(5 * kStroke, in(true, true));
+  r.run(5 * kShot, in(true, true));
   CHECK(!r.t.strokeActive());
   CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 1);
   r.run(1, in(true, false));
@@ -575,7 +897,7 @@ TEST(abort_cancels_a_blocked_semi_pull) {
   r.step(in(true, false, false));
   r.run(1, in(true, true, false));                     // waiting for spin-up
   r.t.abort();
-  r.run(5 * kStroke, in(true, true, true));            // ready now, still held
+  r.run(5 * kShot, in(true, true, true));              // ready now, still held
   CHECK(!r.t.strokeActive());
   CHECK_EQ(r.t.ammo(), MAG_CAPACITY);
   // A pull waiting on the cooldown too.
@@ -583,12 +905,12 @@ TEST(abort_cancels_a_blocked_semi_pull) {
   c.step(in(true, false));
   c.fireSemi(1);
   c.run(1, in(true, true));
-  c.run(kStroke, in(true, true));                      // completed, cooling down
+  c.run(kShot, in(true, true));                        // ended, cooling down
   c.run(1, in(true, false));
   c.run(1, in(true, true));                            // a new pull, blocked by the cooldown
   CHECK_EQ(c.t.gate(in(true, true)), Trigger::Gate::COOLDOWN);
   c.t.abort();
-  c.run(kCool + kStroke, in(true, true));
+  c.run(kCool + kShot, in(true, true));
   CHECK(!c.t.strokeActive());
   CHECK_EQ(c.t.ammo(), MAG_CAPACITY - 2);
 }
@@ -598,22 +920,39 @@ TEST(abort_while_idle_requests_no_rumble) {
   r.t.abort();
   Trigger::Rumble out;
   CHECK(!r.t.takeRumbleRequest(out));
-  CHECK(r.servoAtRest());
+  CHECK(r.servoAtPrefire());
+  CHECK(!r.t.chambering());                            // already home: nothing moved
 }
 
-TEST(disarm_mid_stroke_rests_at_once_without_an_abort_call) {
+TEST(disarm_mid_stroke_goes_home_at_once_without_an_abort_call) {
   Rig r;
   r.step(in(true, false));
   r.run(1, in(true, true));
-  r.run(kSweep + kFwd / 2, in(true, true));
+  r.run(kOut + kFwd / 2, in(true, true));
   CHECK(r.servoAtFire());
   r.run(1, in(false, true));                         // TurretState: no longer ARMED
-  CHECK(r.servoAtRest());
+  CHECK(r.servoAtPrefire());
   CHECK(!r.t.strokeActive());
   CHECK_EQ(r.t.ammo(), MAG_CAPACITY);
-  r.run(3 * kStroke, in(false, true));
+  r.run(3 * kShot, in(false, true));
   CHECK(!r.t.strokeActive());
   CHECK_EQ(r.t.ammo(), MAG_CAPACITY);
+}
+
+// The abort's move home chambers too: re-armed at once, a fresh pull waits TRIGGER_CHAMBER_MS.
+TEST(abort_from_fire_chambers_before_the_next_shot) {
+  Rig r;
+  r.step(in(true, false));
+  r.run(1, in(true, true));
+  r.run(kOut + kFwd / 2, in(true, true));
+  r.t.abort();
+  CHECK(r.t.chambering());
+  r.run(1, in(true, false));                         // chambering starts here
+  r.run(1, in(true, true));
+  CHECK_EQ(r.t.gate(in(true, true)), Trigger::Gate::CHAMBERING);
+  CHECK(!r.t.strokeActive());
+  r.run(kChamber - 1, in(true, true));
+  CHECK(r.t.strokeActive());                         // the held pull fires the moment it ends
 }
 
 TEST(servo_power_off_mid_stroke_aborts) {
@@ -623,7 +962,7 @@ TEST(servo_power_off_mid_stroke_aborts) {
   r.t.setServoPower(false);
   CHECK(!r.t.strokeActive());
   CHECK(!hal_host::servoOn());
-  CHECK_EQ(servoLogical(), (float)TRIGGER_REST_ANGLE);
+  CHECK_EQ(servoLogical(), kPre);
   CHECK_EQ(r.t.ammo(), MAG_CAPACITY);
   CHECK_EQ(r.t.gate(in(true, true)), Trigger::Gate::SERVO_OFF);
 }
@@ -634,64 +973,43 @@ TEST(ammo_floor_is_zero_when_lockout_is_off) {
   r.fireSemi(MAG_CAPACITY + 3);
   CHECK_EQ(r.t.ammo(), 0);                            // never wraps to 255
   CHECK_EQ(r.t.shotsTotal(), MAG_CAPACITY + 3);       // kept cycling at 0
-  CHECK_EQ(r.t.gate(in(true, true)), Trigger::Gate::OPEN);
-  CHECK(r.t.fireReady(r.now, in(true, false)));       // ready at 0: the count blocks nothing
+  CHECK(r.servoAtRest());                             // dry strokes end at REST
+  CHECK(!r.t.emptyMagIndicator());
   r.run(1, in(true, true));
   CHECK(r.t.strokeActive());
+  CHECK(!r.t.emptyMagIndicator());                    // no lockout, no blink
   CHECK_EQ(r.t.gate(in(true, false)), Trigger::Gate::STROKE_RUNNING);
 }
 
-// The owner's choice (2026-11-03, FIRE_LOCKOUT_WHEN_EMPTY false): with config.h's defaults the
-// turret keeps firing at 0, semi and full auto, and the count stays at 0 (never negative).
-TEST(defaults_keep_firing_at_zero_and_the_count_stays_zero) {
-  CHECK(!FIRE_LOCKOUT_WHEN_EMPTY);
-  CHECK(!Trigger::defaults().lockoutWhenEmpty);
-  Rig r;   // Trigger::defaults()
-  r.step(in(true, false));
-  r.fireSemi(MAG_CAPACITY);
-  CHECK_EQ(r.t.ammo(), 0);
-  CHECK_EQ(r.t.shotsTotal(), MAG_CAPACITY);
-  r.fireSemi(3);                                      // semi at 0: each pull still strokes
-  CHECK_EQ(r.t.ammo(), 0);
-  CHECK_EQ(r.t.shotsTotal(), MAG_CAPACITY + 3);
-  r.t.setFireMode(DS_FIRE_MODE_FULL);
-  r.run(1, in(true, false));
-  r.run(1, in(true, true));
-  r.run(4 * kStroke - 1, in(true, true));             // full auto at 0: back to back
-  CHECK_EQ(r.t.ammo(), 0);
-  CHECK_EQ(r.t.shotsTotal(), MAG_CAPACITY + 3 + 3);
-  CHECK(r.t.strokeActive());                          // the fourth is running
-  r.run(1, in(true, false));
-  r.run(2 * kStroke, in(true, false));
-  CHECK_EQ(r.t.shotsTotal(), MAG_CAPACITY + 3 + 4);
-  CHECK_EQ(r.t.ammo(), 0);
-  r.t.resetMagazine();                                // X still reloads
-  CHECK_EQ(r.t.ammo(), MAG_CAPACITY);
-}
-
-TEST(empty_magazine_with_lockout_on_never_strokes) {
+TEST(empty_magazine_with_lockout_never_strokes_and_blinks_only_while_armed_and_pulled) {
   Rig r(cfg(true, FIRE_REQUIRES_FLYWHEEL, RUMBLE_FULL_AUTO_CONTINUOUS));
   r.step(in(true, false));
   r.fireSemi(MAG_CAPACITY);
   CHECK_EQ(r.t.ammo(), 0);
   CHECK_EQ(r.t.gate(in(true, true)), Trigger::Gate::EMPTY);
-  CHECK(!r.t.fireReady(r.now, in(true, false)));      // the EMPTY gate counts for the LEDs too
+  CHECK(!r.t.emptyMagIndicator());                    // armed, not pulled
   r.run(1, in(true, true));
   CHECK(!r.t.strokeActive());
   CHECK(r.servoAtRest());
+  CHECK(r.t.emptyMagIndicator());                     // armed + pulled + empty + lockout
   r.run(500, in(true, true));
   CHECK(!r.t.strokeActive());
   CHECK_EQ(r.t.shotsTotal(), MAG_CAPACITY);
   r.run(1, in(true, false));
+  CHECK(!r.t.emptyMagIndicator());                    // released
   r.run(1, in(false, true));
+  CHECK(!r.t.emptyMagIndicator());                    // disarmed
   Trigger::Gate g = r.t.gate(in(false, true));
   CHECK_EQ(g, Trigger::Gate::NOT_ARMED);
-  // X: magazine back, a new pull fires.
+  // X: magazine back, servo to PRE-FIRE; after the chambering a new pull fires.
   r.run(1, in(true, false));
   r.t.resetMagazine();
   CHECK_EQ(r.t.ammo(), MAG_CAPACITY);
-  CHECK(r.t.fireReady(r.now, in(true, false)));
+  CHECK(r.servoAtPrefire());
   r.run(1, in(true, true));
+  CHECK(!r.t.strokeActive());
+  CHECK(!r.t.emptyMagIndicator());
+  r.run(kChamber, in(true, true));
   CHECK(r.t.strokeActive());
 }
 
@@ -701,7 +1019,7 @@ TEST(the_last_dart_reports_empty_rather_than_the_cooldown) {
   r.step(in(true, false));
   r.fireSemi(MAG_CAPACITY - 1);
   r.run(1, in(true, true));
-  r.run(kStroke, in(true, true));
+  r.run(kLast, in(true, true));
   CHECK_EQ(r.t.ammo(), 0);
   CHECK(r.t.coolingDown());
   CHECK_EQ(r.t.gate(in(true, true)), Trigger::Gate::EMPTY);
@@ -714,24 +1032,25 @@ TEST(held_pull_blocked_by_an_empty_magazine_fires_once_after_reset) {
   r.run(1, in(true, true));                           // pulled on empty: nothing
   CHECK(!r.t.strokeActive());
   r.t.resetMagazine();                                // X while still holding
-  r.run(1, in(true, true));
+  r.run(kChamber + 1, in(true, true));                // fires once chambered
   CHECK(r.t.strokeActive());
-  r.run(5 * kStroke, in(true, true));
+  r.run(5 * kShot, in(true, true));
   CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 1);             // once, not continuously
 }
 
-TEST(full_auto_stops_on_the_last_dart) {
+TEST(full_auto_stops_on_the_last_dart_at_rest) {
   Rig r(strict());
   r.step(in(true, false));
   r.fireSemi(MAG_CAPACITY - 2);
   r.t.setFireMode(DS_FIRE_MODE_FULL);
   r.run(1, in(true, false));
   r.run(1, in(true, true));
-  r.run(10 * kStroke, in(true, true));
+  r.run(10 * kShot, in(true, true));
   CHECK_EQ(r.t.ammo(), 0);
   CHECK_EQ(r.t.shotsTotal(), MAG_CAPACITY);
   CHECK(!r.t.strokeActive());
-  CHECK_EQ(r.t.gate(in(true, true)), Trigger::Gate::EMPTY);
+  CHECK(r.servoAtRest());
+  CHECK(r.t.emptyMagIndicator());
 }
 
 TEST(flywheel_gate_follows_fire_requires_flywheel) {
@@ -740,7 +1059,7 @@ TEST(flywheel_gate_follows_fire_requires_flywheel) {
     r.step(in(true, false, false));
     CHECK_EQ(r.t.gate(in(true, true, false)), Trigger::Gate::FLYWHEEL_NOT_READY);
     r.run(1, in(true, true, false));
-    r.run(2 * kStroke, in(true, true, false));
+    r.run(2 * kShot, in(true, true, false));
     CHECK(!r.t.strokeActive());
     CHECK_EQ(r.t.ammo(), MAG_CAPACITY);
     CHECK(!r.t.fireOnce(r.now, in(true, false, false)));
@@ -758,11 +1077,11 @@ TEST(a_pull_counts_only_if_it_started_while_armed) {
   Rig r;
   r.step(in(false, false));
   r.run(10, in(false, true));                          // pulled while disarmed
-  r.run(5 * kStroke, in(true, true));                  // then armed while still held
+  r.run(5 * kShot, in(true, true));                    // then armed while still held
   CHECK(!r.t.strokeActive());
   CHECK_EQ(r.t.ammo(), MAG_CAPACITY);
   r.t.setFireMode(DS_FIRE_MODE_FULL);                  // full auto: same rule
-  r.run(5 * kStroke, in(true, true));
+  r.run(5 * kShot, in(true, true));
   CHECK_EQ(r.t.ammo(), MAG_CAPACITY);
   r.run(1, in(true, false));                           // released ...
   r.run(1, in(true, true));                            // ... and pulled while armed: fires
@@ -772,13 +1091,13 @@ TEST(a_pull_counts_only_if_it_started_while_armed) {
   Rig q;
   q.step(in(true, false));
   q.run(1, in(true, true));
-  q.run(kStroke, in(true, true));                      // one semi stroke
+  q.run(kShot, in(true, true));                        // one semi shot
   q.run(1, in(true, false));
   q.run(kCool, in(true, false));                       // the cooldown waited out
   q.run(1, in(true, true));
   CHECK(q.t.strokeActive());
   q.run(10, in(false, true));                          // disarmed: aborted
-  q.run(5 * kStroke, in(true, true));                  // re-armed, still holding
+  q.run(5 * kShot, in(true, true));                    // re-armed, still holding
   CHECK(!q.t.strokeActive());
   CHECK_EQ(q.t.ammo(), MAG_CAPACITY - 1);
 
@@ -786,7 +1105,7 @@ TEST(a_pull_counts_only_if_it_started_while_armed) {
   Rig p;
   p.step(in(false, false));
   p.run(1, in(false, true));
-  p.run(5 * kStroke, in(true, true));
+  p.run(5 * kShot, in(true, true));
   CHECK(!p.t.strokeActive());
   CHECK_EQ(p.t.ammo(), MAG_CAPACITY);
 
@@ -797,7 +1116,7 @@ TEST(a_pull_counts_only_if_it_started_while_armed) {
   b.run(1, in(true, true, false));                     // armed pull, flywheel not ready
   b.run(1, in(false, true, false));                    // disarmed, still held
   b.run(1, in(true, true, false));                     // armed again, still held
-  b.run(5 * kStroke, in(true, true, true));            // flywheel ready
+  b.run(5 * kShot, in(true, true, true));              // flywheel ready
   CHECK(!b.t.strokeActive());
   CHECK_EQ(b.t.ammo(), MAG_CAPACITY);
 }
@@ -810,7 +1129,7 @@ TEST(semi_pull_held_through_spin_up_fires_once_when_ready) {
   CHECK(!r.t.strokeActive());
   r.run(1, in(true, true, true));                      // ready, still held: fires now
   CHECK(r.t.strokeActive());
-  r.run(10 * kStroke, in(true, true, true));
+  r.run(10 * kShot, in(true, true, true));
   CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 1);              // once
   // Released while not ready: nothing queued.
   Rig q(strict());
@@ -832,8 +1151,8 @@ TEST(rumble_request_per_stroke_semi) {
   CHECK_EQ(out.weak, RUMBLE_WEAK_255);
   CHECK_EQ(out.ms, RUMBLE_DURATION_MS);
   CHECK(!r.t.takeRumbleRequest(out));                  // cleared by reading
-  r.run(kStroke, in(true, true));
-  CHECK(!r.t.takeRumbleRequest(out));                  // none at the stroke's end
+  r.run(kShot, in(true, true));
+  CHECK(!r.t.takeRumbleRequest(out));                  // none at the sequence's end
 }
 
 TEST(rumble_full_auto_continuous_and_per_shot) {
@@ -844,26 +1163,37 @@ TEST(rumble_full_auto_continuous_and_per_shot) {
     int requests = 0;
     bool allRight = true;
     std::vector<uint32_t> at;
-    for (uint32_t k = 0; k < 4 * kStroke; k++) {
+    Shot first;
+    first.chamber = false;
+    Shot next = first;
+    next.from = kRest;
+    const uint32_t firstMs = totalMs(first), cycleMs = totalMs(next);   // the burst (full auto)
+    r.run(1, in(true, true));                        // shot 1
+    Trigger::Rumble out0;
+    if (r.t.takeRumbleRequest(out0)) {
+      requests++;
+      at.push_back(r.now);
+    }
+    for (uint32_t k = 0; k < firstMs + 2 * cycleMs + cycleMs / 2; k++) {   // shots 2, 3 and 4
       r.run(1, in(true, true));
       Trigger::Rumble out;
       if (r.t.takeRumbleRequest(out)) {
         requests++;
         at.push_back(r.now);
-        const uint16_t want = continuous ? (uint16_t)(kStroke + RUMBLE_DURATION_MS) : (uint16_t)RUMBLE_DURATION_MS;
+        const uint16_t want = continuous ? (uint16_t)(kShot + RUMBLE_DURATION_MS) : (uint16_t)RUMBLE_DURATION_MS;
         allRight = allRight && out.ms == want && out.strong == RUMBLE_STRONG_255 && out.weak == RUMBLE_WEAK_255;
       }
     }
-    CHECK_EQ(requests, 4);                             // renewed every stroke
+    CHECK_EQ(requests, 4);                             // renewed every shot
     CHECK(allRight);
     // Continuous: each request lasts past the next renewal, so the pad never stops while
     // cycling; per shot: each ends before the next stroke.
     for (size_t k = 1; k < at.size(); k++) {
       const uint32_t gap = at[k] - at[k - 1];
       if (continuous)
-        CHECK(kStroke + RUMBLE_DURATION_MS > gap);
+        CHECK(kShot + RUMBLE_DURATION_MS > gap);
       else
-        CHECK_EQ(gap, kStroke);
+        CHECK_EQ(gap, k == 1 ? firstMs : cycleMs);
     }
   }
   // Semi with the continuous switch on: still the per-shot length.
@@ -875,16 +1205,20 @@ TEST(rumble_full_auto_continuous_and_per_shot) {
   CHECK_EQ(out.ms, RUMBLE_DURATION_MS);
 }
 
-// The continuous rumble is one stroke at the angles in force (SERVO ADJUST records change it), and
-// the worst case, a sweep over the whole SERVO_SPAN_DEG, still fits StatusPacket.rumbleMs (u16).
+// The continuous rumble is one shot's sequence at the angles in force (SERVO TEACH records change
+// it), and the worst case, sweeps over the whole SERVO_SPAN_DEG, still fits StatusPacket.rumbleMs (u16).
 TEST(continuous_rumble_follows_the_angles_in_force_and_fits_u16) {
   struct Angles {
-    float rest, fire;
+    float rest, fire, prefire, clear;
   };
-  for (const Angles a : {Angles{100.0f, 90.0f}, Angles{0.0f, (float)SERVO_SPAN_DEG}}) {
-    Rig r(cfg(FIRE_LOCKOUT_WHEN_EMPTY, FIRE_REQUIRES_FLYWHEEL, true));
-    r.t.setAngles(a.rest, a.fire);
+  for (const Angles a :
+       {Angles{100.0f, 90.0f, 95.0f, 98.0f}, Angles{0.0f, (float)SERVO_SPAN_DEG, 0.0f, (float)SERVO_SPAN_DEG}}) {
+    Trigger::Config c = gliding();
+    c.rumbleFullAutoContinuous = true;
+    Rig r(c);
+    r.t.setAngles(a.rest, a.fire, a.prefire, a.clear);
     r.t.abort();
+    r.settle();
     r.t.setFireMode(DS_FIRE_MODE_FULL);
     r.step(in(true, false));
     Trigger::Rumble ignore;
@@ -892,25 +1226,30 @@ TEST(continuous_rumble_follows_the_angles_in_force_and_fits_u16) {
     r.run(1, in(true, true));
     Trigger::Rumble out;
     CHECK(r.t.takeRumbleRequest(out));
-    const uint32_t stroke = sweepFor(spanOf(a.fire, a.rest)) * 2 + kFwd + kRet;
-    CHECK(stroke + RUMBLE_DURATION_MS <= UINT16_MAX);
-    CHECK_EQ(out.ms, (uint16_t)(stroke + RUMBLE_DURATION_MS));
-    // ... and it covers the gap to the next stroke's start.
-    r.run(stroke, in(true, true));
+    Shot s = glidingShot();
+    s.from = s.prefire = a.prefire;
+    s.clear = a.clear;
+    s.rest = a.rest;
+    s.fire = a.fire;
+    const uint32_t shot = totalMs(s);
+    CHECK(shot + RUMBLE_DURATION_MS <= UINT16_MAX);
+    CHECK_EQ(out.ms, (uint16_t)(shot + RUMBLE_DURATION_MS));
+    // ... and it covers the gap to the next shot's start.
+    r.run(shot, in(true, true));
     CHECK(r.t.takeRumbleRequest(out));
   }
 }
 
-TEST(firing_led_covers_the_stroke_and_at_least_the_minimum_flash) {
-  Trigger::Config fast = Trigger::defaults();
-  fast.sweepDegPerS = 0.0f;                           // the shortest stroke there is
-  for (const Trigger::Config& c : {Trigger::defaults(), fast}) {
-    Rig r(c);
-    const uint32_t stroke = sweepFor(spanOf(TRIGGER_FIRE_ANGLE, TRIGGER_REST_ANGLE), c.sweepDegPerS) * 2 + kFwd + kRet;
+TEST(firing_led_covers_the_whole_sequence_and_at_least_the_minimum_flash) {
+  for (const Variant v : kVariants) {
+    const float rate = v.rate;
+    const bool clear = v.clear;
+    Rig r(rated(rate, clear));
+    const uint32_t shot = totalMs(shotAt(rate, clear));
     r.step(in(true, false));
     r.run(1, in(true, true));
     const uint32_t t0 = r.now;
-    const uint32_t holdEnd = std::max<uint32_t>(stroke, LED_FIRE_FLASH_MIN_MS);
+    const uint32_t holdEnd = std::max<uint32_t>(shot, LED_FIRE_FLASH_MIN_MS);
     bool alwaysOn = true;
     r.run(1, in(true, false));                          // released at once: the stroke still runs
     while (r.now < t0 + holdEnd - 1) {
@@ -922,92 +1261,18 @@ TEST(firing_led_covers_the_stroke_and_at_least_the_minimum_flash) {
     CHECK(r.t.firingLedActive(t0 + LED_FIRE_FLASH_MIN_MS - 1));
     r.run(1, in(true, false));                          // t0 + holdEnd
     CHECK(!r.t.firingLedActive(r.now));
-    r.run(stroke, in(true, false));
+    r.run(shot, in(true, false));
     CHECK(!r.t.firingLedActive(r.now));
   }
 }
 
-// ---- fireReady: the ARMED LED colour (owner, 2026-11-03) --------------------------------------------
-// It is exactly "gate() of a fresh pull is OPEN and the shot's LED hold is over": every gate
-// counts (not armed, stroke running, servo off, the flywheel spin-up, EMPTY only with lockout, the
-// semi cooldown), whatever the trigger does now, and asking never fires.
-TEST(fire_ready_follows_every_gate_and_the_led_hold) {
-  Rig r(strict());
-  CHECK(!r.t.fireReady(r.now, in(false, false)));                 // NOT_ARMED
-  CHECK(!r.t.fireReady(r.now, in(true, false, false)));           // FLYWHEEL_NOT_READY
-  CHECK(r.t.fireReady(r.now, in(true, false, true)));
-  CHECK(r.t.fireReady(r.now, in(true, true, true)));              // held or not: a pull would fire
-  CHECK(!r.t.strokeActive());                                     // asking fired nothing
-  CHECK_EQ(r.t.shotsTotal(), 0);
-  r.t.setServoPower(false);
-  CHECK(!r.t.fireReady(r.now, in(true, false)));                  // SERVO_OFF
-  r.t.setServoPower(true);
-  // A semi stroke: not ready from its start until the stroke, the cooldown after it and the LED
-  // hold are all over.
-  CHECK_EQ(r.t.fireMode(), (uint8_t)DS_FIRE_MODE_SEMI);
-  r.step(in(true, false));
-  r.run(1, in(true, true));
-  const uint32_t t0 = r.now;
-  CHECK(r.t.strokeActive());
-  const uint32_t notReadyFor = std::max<uint32_t>(kStroke + kCool, LED_FIRE_FLASH_MIN_MS);
-  bool readyEarly = false, mismatch = false, sawCooldown = false;
-  while (r.now < t0 + notReadyFor - 1) {
-    r.run(1, in(true, false));
-    const Trigger::Input i = in(true, false);
-    readyEarly = readyEarly || r.t.fireReady(r.now, i);
-    sawCooldown = sawCooldown || r.t.gate(in(true, true)) == Trigger::Gate::COOLDOWN;
-    // the definition, every millisecond
-    const bool want = r.t.gate(in(true, true)) == Trigger::Gate::OPEN && !r.t.firingLedActive(r.now);
-    mismatch = mismatch || r.t.fireReady(r.now, i) != want;
-  }
-  CHECK(!readyEarly);
-  CHECK(!mismatch);
-  CHECK(sawCooldown == (kCool > 0));                              // the cooldown kept it yellow
-  r.run(1, in(true, false));                                      // t0 + max(stroke + cooldown, hold)
-  CHECK(r.t.fireReady(r.now, in(true, false)));
-  // Semi with the trigger still held after its shot: once the cooldown is over a fresh pull
-  // would fire, so ready.
-  r.run(1, in(true, true));
-  r.run(kStroke + kCool + LED_FIRE_FLASH_MIN_MS, in(true, true));
-  CHECK_EQ(r.t.shotsTotal(), 2);
-  CHECK(!r.t.strokeActive());
-  CHECK(r.t.fireReady(r.now, in(true, true)));
-  // An abort ends the hold at once (and starts no cooldown).
-  r.run(1, in(true, false));
-  r.run(1, in(true, true));
-  CHECK(!r.t.fireReady(r.now, in(true, true)));
-  r.t.abort();
-  CHECK(r.t.fireReady(r.now, in(true, true)));
-}
-
-// Full auto with the trigger held: after every update the next stroke is already running, so
-// fireReady never comes true between strokes (no red flicker); released, it does.
-TEST(fire_ready_stays_false_while_full_auto_cycles) {
-  Rig r(strict());
-  r.t.setFireMode(DS_FIRE_MODE_FULL);
-  r.step(in(true, false));
-  CHECK(r.t.fireReady(r.now, in(true, false)));
-  r.run(1, in(true, true));
-  const uint16_t shots0 = r.t.shotsTotal();
-  bool ready = false;
-  for (uint32_t k = 0; k < 5 * kStroke; k++) {
-    r.run(1, in(true, true));
-    ready = ready || r.t.fireReady(r.now, in(true, true));
-  }
-  CHECK(!ready);
-  CHECK_EQ(r.t.shotsTotal(), (uint16_t)(shots0 + 5));
-  r.run(1, in(true, false));
-  r.run(kStroke + LED_FIRE_FLASH_MIN_MS, in(true, false));
-  CHECK(r.t.fireReady(r.now, in(true, false)));
-}
-
-TEST(shot_counter_counts_completed_strokes_only) {
+TEST(shot_counter_counts_counted_shots_only) {
   Rig r;
   r.step(in(true, false));
   r.fireSemi(2);
   CHECK_EQ(r.t.shotsTotal(), 2);
   r.run(1, in(true, true));
-  r.run(kSweep + kFwd + 1, in(true, true));
+  r.run(kOut + kFwd + 1, in(true, true));
   r.t.abort();                                        // aborted: not counted
   CHECK_EQ(r.t.shotsTotal(), 2);
   CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 2);
@@ -1016,7 +1281,8 @@ TEST(shot_counter_counts_completed_strokes_only) {
   CHECK_EQ(r.t.shotsTotal(), 2);                      // the counter is not the magazine
 }
 
-// The shell's `fire`: every gate, the semi cooldown included (refused until the very ms it ends).
+// The shell's `fire`: every gate, the chambering and the semi cooldown included (refused until
+// the very ms each ends).
 TEST(fire_once_obeys_every_gate_and_the_cooldown) {
   Rig r(strict());
   CHECK(!r.t.fireOnce(r.now, in(false, false)));
@@ -1030,10 +1296,10 @@ TEST(fire_once_obeys_every_gate_and_the_cooldown) {
   CHECK(!r.t.fireOnce(r.now, in(true, false)));       // busy
   CHECK_EQ(r.t.gate(in(true, false)), Trigger::Gate::STROKE_RUNNING);
   const uint32_t t0 = r.now;
-  r.run(kStroke, in(true, false));
+  r.run(kShot, in(true, false));
   CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 1);
-  CHECK(!r.t.strokeActive());                         // exactly one stroke
-  const uint32_t done = t0 + kStroke;
+  CHECK(!r.t.strokeActive());                         // exactly one shot
+  const uint32_t done = t0 + kShot;
   CHECK(!r.t.fireOnce(done + 1, in(true, false)));
   CHECK_EQ(r.t.gate(in(true, false)), Trigger::Gate::COOLDOWN);
   CHECK(!r.t.fireOnce(done + kCool - 1, in(true, false)));   // no update in between: fireOnce reads the clock
@@ -1044,8 +1310,15 @@ TEST(fire_once_obeys_every_gate_and_the_cooldown) {
   Rig f(strict());
   f.t.setFireMode(DS_FIRE_MODE_FULL);
   CHECK(f.t.fireOnce(f.now, in(true, false)));
-  f.run(kStroke, in(true, false));
+  f.run(kShot, in(true, false));
   CHECK(f.t.fireOnce(f.now, in(true, false)));
+  // Right after X from REST: refused until the chambering is over, also without an update.
+  Rig x(strict(), false);
+  x.t.resetMagazine();
+  CHECK(!x.t.fireOnce(x.now, in(true, false)));       // chambering starts at this call
+  CHECK_EQ(x.t.gate(in(true, false)), Trigger::Gate::CHAMBERING);
+  CHECK(!x.t.fireOnce(x.now + kChamber - 1, in(true, false)));
+  CHECK(x.t.fireOnce(x.now + kChamber, in(true, false)));
 }
 
 TEST(fire_mode_change_needs_a_fresh_pull) {
@@ -1053,13 +1326,13 @@ TEST(fire_mode_change_needs_a_fresh_pull) {
   r.t.setFireMode(DS_FIRE_MODE_FULL);
   r.step(in(true, false));
   r.run(1, in(true, true));
-  r.run(kStroke / 2, in(true, true));
+  r.run(kShot / 2, in(true, true));
   r.t.toggleFireMode();                               // B while cycling: -> semi
   CHECK_EQ(r.t.fireMode(), DS_FIRE_MODE_SEMI);
-  r.run(5 * kStroke, in(true, true));
-  CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 1);             // the running stroke finished, no more
+  r.run(5 * kShot, in(true, true));
+  CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 1);             // the running shot finished, no more
   r.t.toggleFireMode();                               // -> full while still held
-  r.run(5 * kStroke, in(true, true));
+  r.run(5 * kShot, in(true, true));
   CHECK_EQ(r.t.ammo(), MAG_CAPACITY - 1);
   r.run(1, in(true, false));
   r.run(1, in(true, true));
@@ -1068,7 +1341,7 @@ TEST(fire_mode_change_needs_a_fresh_pull) {
   CHECK_EQ(r.t.fireMode(), DS_FIRE_MODE_FULL);
 }
 
-// ---- stroke angles and SERVO ADJUST support (Trigger.h) ---------------------------------------------
+// ---- stroke angles and SERVO TEACH support (Trigger.h) ---------------------------------------------
 namespace {
 Trigger::Input teachIn(bool on = true, bool armed = false) {
   Trigger::Input i;
@@ -1076,144 +1349,188 @@ Trigger::Input teachIn(bool on = true, bool armed = false) {
   i.armed = armed;
   return i;
 }
-// Recorded angles that differ from config.h's (3 and 2 degrees away, inside the servo's span).
+// Recorded angles that differ from config.h's (3, 2, 4 and 5 degrees away, inside the servo's span).
 float teachRest() {
   return TRIGGER_REST_ANGLE + 3 <= SERVO_SPAN_DEG ? TRIGGER_REST_ANGLE + 3.0f : TRIGGER_REST_ANGLE - 3.0f;
 }
 float teachFire() { return TRIGGER_FIRE_ANGLE >= 2 ? TRIGGER_FIRE_ANGLE - 2.0f : TRIGGER_FIRE_ANGLE + 2.0f; }
+float teachPre() {
+  return TRIGGER_PREFIRE_ANGLE + 4 <= SERVO_SPAN_DEG ? TRIGGER_PREFIRE_ANGLE + 4.0f : TRIGGER_PREFIRE_ANGLE - 4.0f;
+}
+float teachClear() {
+  return TRIGGER_CLEAR_ANGLE + 5 <= SERVO_SPAN_DEG ? TRIGGER_CLEAR_ANGLE + 5.0f : TRIGGER_CLEAR_ANGLE - 5.0f;
+}
+Shot teachShot(float from, float rate = kTestRate, bool clear = TRIGGER_CLEAR_ENABLED) {
+  Shot s;
+  s.clearStop = clear;
+  s.from = from;
+  s.rest = teachRest();
+  s.fire = teachFire();
+  s.prefire = teachPre();
+  s.clear = teachClear();
+  s.rate = rate;
+  return s;
+}
 }  // namespace
 
-// setAngles() changes what every stroke, its sweep back and abort() command (it moves nothing by
-// itself: the first stroke sweeps from where the servo is); resetAngles() brings config.h's back.
+// setAngles() changes what every stroke, each sweep and abort() command (it moves nothing by
+// itself: the first stroke starts from where the servo is); resetAngles() brings config.h's back.
 TEST(set_angles_drive_every_stroke_and_abort_until_reset) {
-  Rig r;
-  r.t.setAngles(teachRest(), teachFire());
-  CHECK(r.servoAtRest());                                  // nothing moved yet
+  Rig r(gliding());
+  r.t.setAngles(teachRest(), teachFire(), teachPre(), teachClear());
+  CHECK(r.servoAtPrefire());                               // nothing moved yet
   r.step(in(true, false));
   const float from = r.t.servoDeg();
   Trace tr = traceStroke(r, in(true, true), 4 * MS_PER_S, [&] { r.step(in(true, true)); });
-  CHECK(strokeShapeIs(tr, from, teachFire(), teachRest()));
+  CHECK(strokeShapeIs(tr, teachShot(from)));
   CHECK_EQ(r.t.shotsTotal(), (uint16_t)1);
-  CHECK_EQ(servoLogical(), teachRest());
+  CHECK_EQ(servoLogical(), teachPre());
   r.run(1, in(true, false));
   r.run(kCool, in(true, false));
   tr = traceStroke(r, in(true, true), 4 * MS_PER_S, [&] { r.step(in(true, true)); });
-  CHECK(strokeShapeIs(tr, teachRest(), teachFire(), teachRest()));   // from the recorded REST now
+  CHECK(strokeShapeIs(tr, teachShot(teachPre())));         // from the recorded PRE-FIRE now
   r.run(1, in(true, false));
   r.run(kCool, in(true, false));
   r.step(in(true, true));
-  r.run(sweepFor(spanOf(teachFire(), teachRest())), in(true, true));
+  r.run(sweepFor(spanOf(teachFire(), teachPre()), kTestRate), in(true, true));
   CHECK_EQ(servoLogical(), teachFire());
   r.t.abort();
-  CHECK_EQ(servoLogical(), teachRest());
+  CHECK_EQ(servoLogical(), teachPre());
   r.t.resetAngles();
-  CHECK_EQ(r.t.restDeg(), (float)TRIGGER_REST_ANGLE);
-  CHECK_EQ(r.t.fireDeg(), (float)TRIGGER_FIRE_ANGLE);
+  CHECK_EQ(r.t.restDeg(), kRest);
+  CHECK_EQ(r.t.fireDeg(), kFire);
+  CHECK_EQ(r.t.prefireDeg(), kPre);
+  CHECK_EQ(r.t.clearDeg(), kClear);
   r.t.abort();
-  CHECK(r.servoAtRest());
+  CHECK(r.servoAtPrefire());
 }
 
 TEST(teach_move_only_in_teach_mode_never_armed_never_mid_stroke) {
-  Rig r;
+  Rig r(rated(0.0f));
   const float a = teachRest();
-  CHECK(!r.t.teachMove(a, in(false, false)));               // not in adjust mode
+  CHECK(!r.t.teachMove(a, in(false, false)));               // not in teach mode
   CHECK(!r.t.teachMove(a, teachIn(true, true)));            // armed
-  CHECK(r.servoAtRest());
+  CHECK(r.servoAtPrefire());
   CHECK(!r.t.offRest());
   CHECK(r.t.teachMove(a, teachIn()));
   CHECK_EQ(servoLogical(), a);
   CHECK_EQ(r.t.servoDeg(), a);
   CHECK(r.t.offRest());
-  r.t.setAngles(teachRest(), teachFire());
+  r.t.setAngles(teachRest(), teachFire(), teachPre(), teachClear());
   CHECK(r.t.testStroke(r.now, teachIn()));
   CHECK(!r.t.teachMove(teachFire(), teachIn()));            // a stroke runs
-  CHECK_EQ(servoLogical(), a);                              // the sweep starts where the servo is
-  r.run(sweepFor(spanOf(teachFire(), a)), teachIn());
+  CHECK_EQ(r.t.phase(), Phase::HOLD_CHAMBER);               // the lead-in: PRE-FIRE first (no glide)
+  CHECK_EQ(servoLogical(), teachPre());
+  r.run(kChamber, teachIn());
   CHECK_EQ(servoLogical(), teachFire());
 }
 
-// The test stroke: from the teach angle the servo is at, the same sweeps and holds as a real
-// stroke, firing LED, no rumble, no ammo change, no shot counted, no cooldown; a real stroke
-// cannot start over it.
-TEST(test_stroke_sweeps_like_a_stroke_costs_nothing_and_needs_teach_mode) {
-  Rig r;
-  r.t.setAngles(teachRest(), teachFire());
-  CHECK(!r.t.testStroke(r.now, in(false, false)));
-  CHECK(!r.t.testStroke(r.now, teachIn(true, true)));
-  r.t.setServoPower(false);
-  CHECK(!r.t.testStroke(r.now, teachIn()));
-  r.t.setServoPower(true);
-  const float from = (teachRest() + teachFire()) / 2.0f + 0.5f;   // somewhere between, off-grid
-  CHECK(r.t.teachMove(from, teachIn()));
-  bool ledAlways = true, gateClosed = true;
-  const Trace tr = traceStroke(r, teachIn(), 4 * MS_PER_S, [&] { CHECK(r.t.testStroke(r.now, teachIn())); });
-  CHECK(strokeShapeIs(tr, from, teachFire(), teachRest()));
-  CHECK(!r.t.offRest());                                     // the stroke ended at rest by itself
-  // Run it again, watching the LED and the gate.
-  CHECK(r.t.testStroke(r.now, teachIn()));
-  CHECK(r.t.testStrokeActive());
-  CHECK(r.t.gate(in(true, true)) == Trigger::Gate::STROKE_RUNNING);
-  while (r.t.strokeActive()) {
-    ledAlways = ledAlways && r.t.firingLedActive(r.now);
-    gateClosed = gateClosed && r.t.gate(in(true, true)) == Trigger::Gate::STROKE_RUNNING;
-    r.run(1, teachIn());
+// The test stroke: the whole shot sequence PRE-FIRE -> FIRE -> REST -> pause -> PRE-FIRE (from an
+// angle off PRE-FIRE it first sweeps there and holds TRIGGER_CHAMBER_MS), the same sweeps and
+// holds as a real shot, firing LED, no rumble, no ammo change, no shot counted, no cooldown; a
+// real stroke cannot start over it.
+TEST(test_stroke_runs_the_whole_sequence_costs_nothing_and_needs_teach_mode) {
+  for (const Variant v : kVariants) {
+    const float rate = v.rate;
+    const bool clear = v.clear;
+    Rig r(rated(rate, clear));
+    r.t.setAngles(teachRest(), teachFire(), teachPre(), teachClear());
+    CHECK(!r.t.testStroke(r.now, in(false, false)));
+    CHECK(!r.t.testStroke(r.now, teachIn(true, true)));
+    r.t.setServoPower(false);
+    CHECK(!r.t.testStroke(r.now, teachIn()));
+    r.t.setServoPower(true);
+    const float from = (teachRest() + teachFire()) / 2.0f + 0.5f;   // somewhere between, off-grid
+    CHECK(r.t.teachMove(from, teachIn()));
+    Shot lead = teachShot(from, rate, clear);
+    lead.leadIn = true;
+    const Trace tr = traceStroke(r, teachIn(), 4 * MS_PER_S, [&] { CHECK(r.t.testStroke(r.now, teachIn())); });
+    CHECK(strokeShapeIs(tr, lead));
+    CHECK(!r.t.offRest());                                     // it ended at PRE-FIRE by itself
+    // Again from PRE-FIRE (no lead-in), watching the LED and the gate.
+    bool ledAlways = true, gateClosed = true;
+    const Trace again = traceStroke(r, teachIn(), 4 * MS_PER_S, [&] { CHECK(r.t.testStroke(r.now, teachIn())); });
+    CHECK(strokeShapeIs(again, teachShot(teachPre(), rate, clear)));
+    CHECK(r.t.testStroke(r.now, teachIn()));
+    CHECK(r.t.testStrokeActive());
+    while (r.t.strokeActive()) {
+      ledAlways = ledAlways && r.t.firingLedActive(r.now);
+      gateClosed = gateClosed && r.t.gate(in(true, true)) == Trigger::Gate::STROKE_RUNNING;
+      r.run(1, teachIn());
+    }
+    CHECK(ledAlways);
+    CHECK(gateClosed);
+    CHECK_EQ(r.t.ammo(), (uint8_t)MAG_CAPACITY);
+    CHECK_EQ(r.t.shotsTotal(), (uint16_t)0);
+    CHECK(!r.t.coolingDown());
+    Trigger::Rumble rumble;
+    CHECK(!r.t.takeRumbleRequest(rumble));
+    CHECK_EQ(servoLogical(), teachPre());
   }
-  CHECK(ledAlways);
-  CHECK(gateClosed);
-  CHECK_EQ(r.t.ammo(), (uint8_t)MAG_CAPACITY);
-  CHECK_EQ(r.t.shotsTotal(), (uint16_t)0);
-  CHECK(!r.t.coolingDown());
-  Trigger::Rumble rumble;
-  CHECK(!r.t.takeRumbleRequest(rumble));
+  // At ammo 0 too (no dart, no count): still the whole sequence, ending at PRE-FIRE.
+  Rig z(Trigger::defaults(), false);
+  z.t.setAngles(teachRest(), teachFire(), teachPre(), teachClear());
+  CHECK(z.t.teachMove(teachPre(), teachIn()));
+  const Trace tr = traceStroke(z, teachIn(), 4 * MS_PER_S, [&] { CHECK(z.t.testStroke(z.now, teachIn())); });
+  CHECK(strokeShapeIs(tr, teachShot(teachPre(), kRate)));
+  CHECK_EQ(z.t.ammo(), 0);
+  CHECK(z.t.offRest());                                      // PRE-FIRE is not home at ammo 0 ...
+  z.step(in(false, false));                                  // ... so leaving teach mode sends it to REST
   CHECK_EQ(servoLogical(), teachRest());
+  CHECK(!z.t.offRest());
 }
 
-// KEY SAFETY TEST: a test stroke never outlives adjust mode, in whatever phase adjust mode drops
+// KEY SAFETY TEST: a test stroke never outlives teach mode, in whatever phase teach mode drops
 // (or armed rises), and a teach angle never outlives it either, even without an abort() call; an
-// aborted test stroke requests no rumble stop and goes to REST at once (no sweep).
-TEST(teach_mode_dropping_rests_the_servo_without_an_abort_call) {
-  const uint32_t sweep = sweepFor(spanOf(teachFire(), teachRest()));
-  for (const Phase p : kStrokePhases) {
-    if (phaseLength(p, sweep) == 0) continue;
-    for (int k = 0; k < 2; k++) {
-      Rig r;
-      r.t.setAngles(teachRest(), teachFire());
-      r.t.abort();
-      CHECK(r.t.testStroke(r.now, teachIn()));
-      r.run(phaseStart(p, sweep) + phaseLength(p, sweep) / 2, teachIn());
-      CHECK_EQ(r.t.phase(), p);
-      r.step(k == 0 ? in(false, false) : teachIn(true, true));   // teach dropped / armed rose
-      CHECK(!r.t.strokeActive());
-      CHECK_EQ(servoLogical(), teachRest());
-      CHECK_EQ(r.t.shotsTotal(), (uint16_t)0);
-      CHECK_EQ(r.t.ammo(), (uint8_t)MAG_CAPACITY);
-      CHECK(!r.t.coolingDown());
-      Trigger::Rumble rumble;
-      CHECK(!r.t.takeRumbleRequest(rumble));
+// aborted test stroke requests no rumble stop and goes home at once (no sweep).
+TEST(teach_mode_dropping_sends_the_servo_home_without_an_abort_call) {
+  for (const Variant v : kVariants) {
+    const float rate = v.rate;
+    const bool clear = v.clear;
+    const Shot s = teachShot(teachPre(), rate, clear);
+    for (const Phase p : kShotPhases) {
+      if (phaseLength(p, s) == 0) continue;
+      for (int k = 0; k < 2; k++) {
+        Rig r(rated(rate, clear));
+        r.t.setAngles(teachRest(), teachFire(), teachPre(), teachClear());
+        r.t.abort();
+        CHECK(r.t.testStroke(r.now, teachIn()));
+        r.run(phaseStart(p, s) + phaseLength(p, s) / 2, teachIn());
+        CHECK_EQ(r.t.phase(), p);
+        r.step(k == 0 ? in(false, false) : teachIn(true, true));   // teach dropped / armed rose
+        CHECK(!r.t.strokeActive());
+        CHECK_EQ(servoLogical(), teachPre());
+        CHECK_EQ(r.t.shotsTotal(), (uint16_t)0);
+        CHECK_EQ(r.t.ammo(), (uint8_t)MAG_CAPACITY);
+        CHECK(!r.t.coolingDown());
+        Trigger::Rumble rumble;
+        CHECK(!r.t.takeRumbleRequest(rumble));
+      }
     }
   }
   Rig r;
   CHECK(r.t.teachMove(teachFire(), teachIn()));
   r.run(10, teachIn());
-  CHECK_EQ(servoLogical(), teachFire());            // held while in adjust mode
+  CHECK_EQ(servoLogical(), teachFire());            // held while in teach mode
   r.step(in(false, false));
-  CHECK(r.servoAtRest());
+  CHECK(r.servoAtPrefire());
   CHECK(!r.t.offRest());
   CHECK(r.t.teachMove(teachFire(), teachIn()));
-  r.t.setServoPower(false);                                 // parked; the next update rests it
+  r.t.setServoPower(false);                                 // parked; the next update sends it home
   r.step(in(false, false));
-  CHECK(r.servoAtRest());
+  CHECK(r.servoAtPrefire());
 }
 
 // TRIGGER_SERVO_REVERSED (owner, 2026-11-03): the servo receives SERVO_SPAN_DEG - angle, so the
 // racked REST (180) is the servo's own 0 end and every move toward FIRE turns it the other way.
 TEST(reversed_servo_receives_the_mirrored_angle) {
-  Rig r;   // begin() and servo power on
+  Rig r(Trigger::defaults(), false);   // begin() and servo power on, the boot ammo
   const float sent = hal_host::servoAngle();
+  const float home = TRIGGER_AMMO_AT_BOOT > 0 ? kPre : kRest;
   if (TRIGGER_SERVO_REVERSED) {
-    CHECK_NEAR(sent, (float)SERVO_SPAN_DEG - (float)TRIGGER_REST_ANGLE, 0.001f);
+    CHECK_NEAR(sent, (float)SERVO_SPAN_DEG - home, 0.001f);
   } else {
-    CHECK_NEAR(sent, (float)TRIGGER_REST_ANGLE, 0.001f);
+    CHECK_NEAR(sent, home, 0.001f);
   }
   CHECK_NEAR(Trigger::physicalDeg(Trigger::physicalDeg(37.0f)), 37.0f, 0.001f);   // its own inverse
 }

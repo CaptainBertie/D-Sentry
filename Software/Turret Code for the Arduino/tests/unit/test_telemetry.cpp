@@ -592,8 +592,7 @@ TEST(collect_reads_led0_and_the_lcd_mirror) {
   rig.tel.collect(hal::nowMs(), s);
   CHECK_EQ(s.led0.r, leds.pixel0().r);
   CHECK_EQ(s.led0.g, leds.pixel0().g);
-  CHECK_EQ(s.led0.r, Leds::scale((uint8_t)((LED_COLOR_ARMED_WAIT >> COLOR_SHIFT_R) & COLOR_BYTE_MASK)));
-  CHECK_EQ(s.led0.g, Leds::scale((uint8_t)((LED_COLOR_ARMED_WAIT >> COLOR_SHIFT_G) & COLOR_BYTE_MASK)));
+  CHECK_EQ(s.led0.r, Leds::scale((uint8_t)((LED_COLOR_ARMED_FULL >> COLOR_SHIFT_R) & COLOR_BYTE_MASK)));
   char mirror[DS_TELEMETRY_LCD_LEN];
   lcd.mirror(mirror);
   CHECK_EQ(std::string(s.lcd, DS_TELEMETRY_LCD_LEN), std::string(mirror, DS_TELEMETRY_LCD_LEN));

@@ -33,12 +33,8 @@ namespace hal_host {
 
 // Power-on state: time 0, pins low, inputs at their idle level (toggles open: HIGH with the
 // pull-ups when TOGGLE_ACTIVE_LOW), analog 0, steppers stopped at 0, LCD present at
-// LCD_I2C_ADDR, empty pipes, a blank settings store (every byte 0xFF: a new board). Call before
-// hal::begin() in every test.
+// LCD_I2C_ADDR, empty pipes. Call before hal::begin() in every test.
 void reset();
-// reset() except the settings store keeps its bytes and its fault settings: a power cycle or a
-// reset button. A new App then boots on what the last one saved.
-void reboot();
 
 // ---- time ----
 void setTimeUs(uint64_t us);   // moves forward (running the model); never backwards
@@ -116,21 +112,5 @@ size_t linkInject(const uint8_t* data, size_t len);
 size_t linkInject(const std::string& data);
 std::string linkTakeTx();
 uint32_t linkRxDropped();
-
-// ---- settings store (hal::storeLoad / storeSave; the board's data flash) ----
-// SETTINGS_STORE_MAX_BYTES bytes, kept by reboot(), blanked by reset() and storeErase().
-// hal::storeSave() writes, then moves virtual time on by storeSaveUs() (the steppers keep
-// stepping meanwhile, as the step interrupt does on the board) before it returns.
-void storeErase();                        // every byte 0xFF
-uint8_t storeByte(size_t i);              // 0xFF past the end
-void storeSetByte(size_t i, uint8_t v);   // corrupt one byte (ignored past the end)
-uint32_t storeSaves();                    // hal::storeSave calls that wrote, since reset() / reboot()
-uint32_t storeLoads();                    // hal::storeLoad calls, since reset() / reboot()
-// How long one save blocks, virtual us. Default kStoreSaveTypicalUs: hal.h's typical figure.
-void setStoreSaveUs(uint64_t us);
-uint64_t storeSaveUs();
-extern const uint64_t kStoreSaveTypicalUs;
-// true: the next saves write nothing and return false (worn or failing flash).
-void failStoreSaves(bool fail);
 
 }  // namespace hal_host

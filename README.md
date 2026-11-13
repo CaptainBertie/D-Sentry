@@ -27,7 +27,7 @@ diagram and contract: [`Software/System Block Diagram/`](Software/System%20Block
 Mechanical/
   CAD/            vendor reference parts, printable meshes, nameplate art
   Gcode/          testing/ (fit & calibration prints), final/ (the turret's own parts)
-  Fitment/        measured fit values (template — not yet filled in)
+  Fitment/        measured fit values (fasteners, bearings, LCD, gears)
 Hardware/
   BOM/            parts list
   Wiring Diagram/ full wiring, plus the flywheel driver sub-circuit
@@ -54,19 +54,36 @@ Every one of those folders has its own README with the detail — this file is t
 ## Status
 
 Built for a university mechanical engineering project (hence the `A4` in the original working
-directory). As of 2026-11-13, the turret has been bench-tested with real hardware: trigger and
-flywheel directions confirmed, tilt soft limit measured (43.87°), trigger stroke angles taught
-and saved to flash, LED state scheme finalized. `Software/Turret Code for the Arduino/docs/bench-checklist.md`
+directory). As of 2026-11-13, the turret has been bench-tuned on real hardware across two
+branches, `d-sentry` then `turret-live` — see **A note on branches** below. Firing now runs a
+three-position servo sequence (REST/PRE-FIRE/FIRE, see `DECISIONS.md` D27) rather than a
+simple two-position one; pan and tilt directions, speeds and calibration timing were all
+tuned on the bench (D28-D29). `Software/Turret Code for the Arduino/docs/bench-checklist.md`
 is the first-power-up-to-acceptance-criteria checklist; `DECISIONS.md` is the full log of what
 was decided, why, and what was tried instead.
 
-Open items, honestly: `Mechanical/Fitment/` has a template with the structure filled in but
-the actual measured fit values still TODO (confirmed never recorded anywhere, not just
-missing locally); a few BOM rows (fastener/bearing/magnet sizes, exact servo/stepper models)
-are unresolved or conflict with each other — see `Hardware/BOM/BOM.md`. The build has also
-moved past the spec in a few places since 2 Nov — a 5 V UBEC was added, the tilt gear's ratio
-label doesn't match its recorded tooth count, and the LCD is currently blank — all logged as
-`DECISIONS.md` D20-D25.
+Open items, honestly: a 270°/s pan-speed trial hasn't been confirmed safe yet (D28); the
+flywheels still run at a fixed PWM duty that over-drives them in one mode, and a fix for it
+exists but hasn't been approved (D30); the exact trigger servo model is still unresolved
+(three different candidates across three sources, none confirmed); the UBEC, L298N and
+A4988 purchase links aren't recorded, and neither is a LiPo charger or any magnets — see
+`Hardware/BOM/BOM.md`. The tilt gear's ratio label doesn't match its recorded tooth count
+(D23).
+
+### A note on branches
+
+This repo was first built from the `d-sentry` branch, then corrected on 2026-11-13 once it
+became clear `d-sentry` isn't what's on the turret: it was rolled back before an LED scheme
+and a servo flash-save feature were ever flashed, and a separate branch, `turret-live`, took
+over from there with 13 more commits of real bench tuning. `Software/Turret Code for the
+Arduino/`, `Software/System Block Diagram/architecture.md`, `Software/Custom
+Firmware/protocol/`, and the PC relay are now synced from `turret-live`. Full detail:
+`DECISIONS.md` D26.
+
+That re-sync also caught something worth saying plainly: `turret-live`'s `config.h` hard-codes
+a real WiFi access-point password, which had already been sitting in this public repo's git
+history since its first commit. It's redacted in the current files, but **not removed from
+history** — treat that password as burned and change it on the real turret.
 
 ## History
 
@@ -76,12 +93,16 @@ over (`DECISIONS.md` D14) before ever touching real hardware, then bench-tested 
 D-Sentry itself — the turret's own state machine, motion control, PC relay and dashboard — was
 built from a full specification (`D-SENTRY_SPEC.md`) in a single day (2026-11-03), simulated
 against a fake hardware layer before ever running on the real board, then bench-tuned on the
-real turret the same afternoon. Every non-obvious decision along the way, and every
-alternative considered, is recorded in `DECISIONS.md`.
+real turret the same afternoon. Bench tuning continued past that first day on `turret-live`:
+reworking the firing sequence, flipping and re-tuning pan and tilt, and chasing down a
+dead pad pairing, a frozen board, and a frozen LCD — all fixed, all in `DECISIONS.md` D26-D31.
+Every non-obvious decision along the way, and every alternative considered, is recorded in
+`DECISIONS.md`.
 
 Partway through, modeling gears by hand got tedious enough that we also built **GearForge**,
-a separate Fusion 360 add-in for generating parametric ISO gear profiles — whether it's
-actually what generated this turret's own gears is unconfirmed; see `Mechanical/CAD/README.md`.
+a separate Fusion 360 add-in for generating parametric ISO gear profiles — every gear in
+this turret (tilt, pan planetary, shooter rack-and-pinion) was generated with it; see
+`Mechanical/CAD/README.md`.
 
 ## License
 

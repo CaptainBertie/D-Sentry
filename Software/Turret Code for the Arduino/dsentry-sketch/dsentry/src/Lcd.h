@@ -8,9 +8,11 @@
 //                     "Pairing<dots>", NO_LINK "No Link" (architecture.md 6; TurretState picks
 //                     the phase, LINK_RECONNECT_GRACE_MS)
 //   DISARMED, ARMED   arm row / mode + "Connected" ("No Link" if the model says not connected)
-//   SERVO ADJUST      (DISARMED with DisplayModel::servoTeach) LCD_TXT_SERVO_ADJUST + the commanded
-//                     angle right-justified / LCD_TXT_SERVO_REST<rest> LCD_TXT_SERVO_FIRE<fire>, the
-//                     angles in force ("SERVO ADJUST 180" / "R:180 F:25")
+//   SERVO TEACH       (DISARMED with DisplayModel::servoTeach) LCD_TXT_SERVO_TEACH + the commanded
+//                     angle right-justified / LCD_TXT_SERVO_REST<rest>LCD_TXT_SERVO_FIRE<fire>
+//                     LCD_TXT_SERVO_PREFIRE<prefire>LCD_TXT_SERVO_CLEAR<clear> with no spaces
+//                     (four 3-digit angles fill 16 columns), LCD_TXT_SERVO_UNSET for an angle
+//                     not recorded ("SERVO TEACH 118" / "R180F64P118C150", "R-F-P-C-")
 //   FAULT             LCD_TXT_FAULT_STALL / _CAL (LCD_TXT_FAULT_OTHER for any other code) /
 //                     mode + "Connected" or "No Link"
 // Arm row: LCD_TXT_ARMED or LCD_TXT_DISARMED left; after ARMED, with LCD_TXT_SHOW_FIRE_MODE,
