@@ -8,17 +8,9 @@ LEDs, the LCD, and the link to the radio chip. You upload it like any Arduino sk
 The radio chip (ESP32-S3) runs separate firmware that this sketch talks to over a serial AT
 link — see `../Custom Firmware/`. The full system picture is in `../System Block Diagram/`.
 
-This is synced from the `turret-live` branch of the original development repo — the one
-actually flashed to the turret — not `d-sentry`, which still carries an LED scheme and a
-servo flash-save feature that were built and then rolled back before ever being flashed.
-See `../../DECISIONS.md` D26 if a build or a decision here looks inconsistent with an older
-description elsewhere in this repo; `turret-live` is the one that's real.
-
 `dsentry-sketch/dsentry/config.h`, `dsentry_protocol.h` and `xbox_r4_protocol.h` are plain
-copies of `config.h` (above) and the files in `../Custom Firmware/protocol/` — the original
-repo wired them up as symlinks, which don't survive this folder's structure or a Windows
-checkout reliably, so they're flattened here. If you change one, re-copy it into this
-sketch folder too.
+copies of `config.h` (above) and the files in `../Custom Firmware/protocol/`. If you change
+one, re-copy it into this sketch folder too.
 
 ## Folder map
 

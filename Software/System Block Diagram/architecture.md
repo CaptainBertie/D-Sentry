@@ -4,10 +4,7 @@
 > repo's layout (`D-SentryCode/`, `../firmware`, symlinked `config.h`, etc.). It's kept
 > here unedited for the engineering history and reasoning — the "owner decisions that
 > override the spec" section especially. For where things actually live in *this* repo,
-> see `../Custom Firmware/README.md` and `../Turret Code for the Arduino/README.md`. This
-> copy is from the `turret-live` branch — the branch actually flashed to the turret — not
-> `d-sentry`, which still carries an LED scheme and a servo flash-save feature that were
-> built, then rolled back before ever being flashed; see `../../DECISIONS.md` D26.
+> see `../Custom Firmware/README.md` and `../Turret Code for the Arduino/README.md`.
 
 This file is the contract every part of D-Sentry is built against. `D-SENTRY_SPEC.md` (repo root)
 is the original spec; where this file disagrees with it, this file wins, because each difference

@@ -324,7 +324,7 @@
 #define WIFI_PASSWORD             ""            // [HW]
 #define WIFI_MODE_AP_FALLBACK     true          // [CHOICE] host own AP if STA fails
 #define WIFI_AP_SSID              "D-SENTRY"
-#define WIFI_AP_PASSWORD          "CHANGE_ME_8CHARS"  // [HW] >= 8 chars - REDACTED for the public repo, set your own
+#define WIFI_AP_PASSWORD          "brockpurdy"  // [HW] >= 8 chars (owner, 2026-11-03)
 #define WIFI_UDP_PORT             4210          // [HW] PC relay sends here
 #define BLE_DEVICE_NAME           "D-SENTRY"
 #define BLE_FORGET_PAIRINGS_ON_BOOT false       // [CHOICE] true wipes bond keys

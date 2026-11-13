@@ -6,8 +6,6 @@
 - `firmware-architecture.html` — a second, later pass at the same system: an interactive
   page with the control-path block diagram, the `App::begin()`/`App::loop()` flowchart, and
   the turret's state diagram, built straight from the firmware source. Open it in a browser.
-  Surfaced through the 2026-11-13 Claude.ai Project handoff (see `../../handoff-inbox/`),
-  not originally part of this repo.
 
 Both diagrams describe the same system from slightly different angles and were built at
 different points — if they ever disagree, check the firmware source

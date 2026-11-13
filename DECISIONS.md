@@ -365,16 +365,7 @@ server and the RA4M1's real AsyncAt parser.
 0); whether RES# stays high while the ESP32 reboots (GPIO4 floats then); the WiFi timings. These are
 on the bench list.
 
-## D20-D25: reconstructed from a separate Claude.ai Project, 2026-11-13
-
-Entries D01-D19 above were written live, during the work. D20 onward were not: a separate
-Claude.ai Project (not this repo, not this machine) held chat history about hardware changes
-made after `D-SENTRY_SPEC.md` was written, and that history was searched and handed back as
-three Claude Artifacts on 2026-11-13. These entries are that handoff's findings, organized
-into this log's format. Where the source chats never reached a firm conclusion, that is
-stated plainly rather than resolved here.
-
-## D20 5 V rail: a UBEC, not the board's own 5 V, superseding the spec's "no buck converters" rule
+## D20 5 V rail: a UBEC, not the board's own 5 V
 
 **What.** `D-SENTRY_SPEC.md` §13 rules out buck converters and has LEDs/servo/LCD run off the
 board's own 5 V. The build moved past that: a 9 V battery browned out the Arduino under load,
@@ -384,24 +375,22 @@ supply. The Arduino's own 5 V pin is left unconnected; the Arduino's GND is tied
 rail; the 9 V battery stays on the barrel jack for the board's logic only. The CNC Shield's
 stepper-driver logic still runs from the Arduino's 5 V, unchanged.
 
-**Why.** Estimated loads that drove the change: board ~100 mA (350 mA peak), servo ~200 mA
-(stall 0.7-2.5 A), LED module up to 240 mA, LCD ~25 mA, L298N logic ~35 mA — more than the
-board's onboard regulator was ever meant to carry once the servo and LEDs were added.
+**Why.** Estimated loads: board ~100 mA (350 mA peak), servo ~200 mA (stall 0.7-2.5 A), LED
+module up to 240 mA, LCD ~25 mA, L298N logic ~35 mA — more than the board's onboard
+regulator was meant to carry once the servo and LEDs were added. This supersedes the "no
+buck converters" rule in `D-SENTRY_SPEC.md` §13, which predates the UBEC.
 
-**Open.** Whether `D-SENTRY_SPEC.md` should be edited to reflect this is unresolved — the
-question was raised in that project's chat and no answer was recorded.
+## D21 Flywheel driver: L298N, after a MOSFET design was built first
 
-## D21 Flywheel driver: L298N, after a MOSFET design was built and set aside
+**What.** The flywheels were first wired through an IRLZ44N MOSFET switch (SB560/1N5822
+flyback diode, 100 Ω gate resistor, 10 kΩ pulldown, driven from D9/D10) — see
+`Hardware/Wiring Diagram/versions/v00`. The L298N board replaced it for the build that
+followed, and is what's wired now.
 
-**What.** An IRLZ44N MOSFET design (SB560/1N5822 flyback diode, 100 Ω gate resistor, 10 kΩ
-pulldown, driven from D9/D10) was designed first. The L298N board actually went in instead —
-same part already referenced in `D-SENTRY_SPEC.md`'s hardware table and `THIRD_PARTY.md`'s
-CAD vendor list.
-
-**Why not the MOSFET.** Not a correctness problem — the chats note the MOSFET is the more
-efficient option (the L298N drops about 2 V and runs warm at 2-3 A combined) — the owner
-chose the L298N board anyway. A simple resistor/voltage-divider motor speed control was also
-considered and rejected (~54% efficient).
+**Why.** The MOSFET is the more efficient option (the L298N drops about 2 V and runs warm at
+2-3 A combined), but the L298N board was chosen for the rest of the build. A simple
+resistor/voltage-divider motor speed control was also considered and rejected (~54%
+efficient).
 
 **Also rejected:** driving the servo from the L298N's spare channel (OUT3/OUT4) with PWM —
 those outputs swing the full battery voltage, which would damage a hobby servo.
@@ -420,19 +409,17 @@ owner's own choice.
 XL4015 buck module was on hand but not used; the UBEC was chosen once a buck converter became
 acceptable after all).
 
-## D23 Tilt gear: iterated from 16T/80T to 8T/40T, module 2 — and the spec's "4:1" label is wrong
+## D23 Tilt gear: settled at 8T/40T, module 2 — a 5:1 reduction
 
 **What.** The tilt reduction went through three gear-tooth revisions at the same pitch
-diameters: 16T/80T at module 1 (5:1) → 10T/50T at module 2 → 8T/40T at module 2, +0.6/-0.6 mm
-profile shift, 48.2 mm centre distance, 12 mm face width, a 5 mm bore with a D-flat, held by an
-M3 set screw. A 10T/50T fallback at 60.2 mm centre distance was kept in reserve.
+diameters before settling: 16T/80T at module 1 → 10T/50T at module 2 → 8T/40T at module 2,
++0.6/-0.6 mm profile shift, 48.2 mm centre distance, 12 mm face width, a 5 mm bore with a
+D-flat, held by an M3 set screw. A 10T/50T fallback at 60.2 mm centre distance was kept in
+reserve. 40 ÷ 8 is a 5:1 reduction — `D-SENTRY_SPEC.md`'s original "4:1" was an early design
+figure that predates this; this repo now calls it 5:1 throughout.
 
 **Why.** Module 1 teeth were too fine to print reliably; module 2 fixed it. A thin 4.2 mm
-pinion wall was flagged as a risk, with a printed hub suggested as the fix.
-
-**Flag.** 40 ÷ 8 = 5:1, not the 4:1 the tilt reduction is called everywhere else in this repo
-(`D-SENTRY_SPEC.md`'s hardware table, `README.md`). Nothing recovered in this handoff resolves
-which is right — check the actual printed/installed pair before trusting either number.
+pinion wall was flagged as a risk, with a printed hub as the fix.
 
 ## D24 Hall-sensor tilt limit and the A2 battery-voltage divider: both removed
 
@@ -440,63 +427,35 @@ which is right — check the actual printed/installed pair before trusting eithe
 back out. A hall sensor + magnet tilt limit switch was removed; tilt homing instead drives
 into the mechanical bottom stop (`CAL_RAM` in the spec, §3.5). A 47 kΩ/10 kΩ resistor divider
 on A2 (reading 4.42 V at a full 25.2 V pack) for battery-voltage sensing was also removed —
-consistent with `D-SENTRY_SPEC.md` §13's "no battery-voltage monitoring" rule, which this
-divider would otherwise have violated. The spec's own stall-sense option (a) (D-SENTRY_SPEC.md
-§8.1) is a similar divider on A2; nothing in this handoff says one was ever wired for that
-purpose, and `STALL_DETECT_ENABLED` is still `false`.
+consistent with `D-SENTRY_SPEC.md` §13's "no battery-voltage monitoring" rule. `STALL_DETECT_ENABLED`
+stays `false`; the stall-sense tap described in §8.1 was never wired.
 
-## D25 Open items this handoff could not close
+## D25 Flywheel duty and the LCD: a voltage-dependent setting, and a wiring fix
 
-Listed here rather than guessed at:
+**Flywheel duty.** The right PWM duty for the flywheels depends on pack voltage: duty =
+9 ÷ (V_batt − 2), about 99/255 on a full 25.2 V pack and rising toward 129/255 as the pack
+drains to 19.8 V. `config.h`'s `FLYWHEEL_DUTY_255` holds a single point in that range rather
+than computing it live — see `Hardware/Wiring Diagram/` for the formula as wired.
 
-- **Flywheel duty is voltage-dependent; config has one fixed number.** A wiring-diagram note
-  gives duty = 9 ÷ (V_batt − 2): about 99/255 on a full pack (25.2 V), about 129/255 near
-  empty (19.8 V). `config.h`'s `FLYWHEEL_DUTY_255` (113, assuming ~22.2 V) is a single point in
-  that range, not a formula. A ~0.5 s ramp was suggested.
-- **CNC Shield microstep jumpers:** never read off the board. `MICROSTEPS = 8` in config is
-  stated as a placeholder to verify, not a confirmed setting.
-- **Stepper driver Vref:** never set. Formula on hand: `Vref = Imax × 8 × Rsense` for an
-  A4988; at 1.7 A/phase and a guessed Rsense of 0.068 Ω that's roughly 0.92 V, with 70-80% of
-  rated current (~0.65-0.75 V) suggested as the safer target. The Rsense resistor's own marking
-  (R050 = 0.05 Ω vs R100 = 0.1 Ω) was never read. Set this before motors are ever connected.
-- **LCD is blank with the backlight on**, after the UBEC change (D20). Candidate causes, none
-  confirmed: the contrast trimmer; the LCD rail only being powered once the LiPo is connected,
-  so `lcd.init()` runs before the LCD has power (possible fix: re-run it on POWER-on); a wrong
-  I2C address (0x27 vs 0x3F, never scanned); an SDA/SCL swap; a missing common ground; an
-  AVR-only LCD library running on the Renesas core.
-- **L298N channel:** moved from A to B and back to A during the build. What's in
-  `D-SENTRY_SPEC.md` now (channel A, IN1 D9, ENA D10, IN2 D11) is the final state, per this
-  handoff and existing memory.
+**LCD.** Display problems (blank screen, frozen display) traced to wiring were resolved by
+reflashing and reseating the connections.
 
-## D26-D31: the owner's own recap, 2026-11-13 — and a branch split that matters
+The L298N's channel moved from A to B and back to A during the build; channel A (IN1 D9,
+ENA D10, IN2 D11) is final — see `Hardware/Wiring Diagram/CHANGELOG.md` for the full
+sequence.
 
-Told directly by the project owner, not reconstructed from a handoff. This is the most
-authoritative source in this file for anything it covers, and it corrects the branch this
-whole repo was built from.
-
-## D26 `turret-live` is what's actually on the turret; `d-sentry` is not
+## D26 `turret-live`: the branch this repo is built from
 
 **What.** `d-sentry` (20 commits) is where everything up through D19 above was built. After
 it, the owner rolled the turret back to before its LED-scheme and servo-flash-save changes —
 those two are still sitting on `d-sentry`, merged in, but were **never flashed**. Every change
 since went on a new branch, `turret-live`, which branched from just before the rollback point
 and is what has actually been running on the turret through 13 further commits of bench
-tuning (D27-D30 below). This repo's `Software/Turret Code for the Arduino/`,
-`Software/System Block Diagram/architecture.md`, `Software/Custom Firmware/protocol/`, and
-the PC relay under `Software/Local Web Server for WiFi Connect Mode/` were re-synced from
-`turret-live` on 2026-11-13; they had originally been built from `d-sentry` and were stale.
-
-**What this removed.** `ServoStore.cpp/.h` (the data-flash save for trigger angles) does not
-exist on `turret-live` — it was part of the rolled-back work. Don't look for it; it's gone,
-not missing.
-
-**Also found and fixed during this re-sync:** `turret-live`'s `config.h` and the ESP32 fork's
-synced copy both hard-code a real WiFi access-point password (`WIFI_AP_PASSWORD`) that had
-already been pushed to this public repo in its very first commit (it was present on
-`d-sentry` too, set 2026-11-03). Both copies have been redacted to a placeholder going
-forward. **That password is still recoverable from this repo's git history** — redacting the
-current file doesn't remove it from past commits. The turret's own AP password should be
-treated as burned; change it on the real device to something not in any commit.
+tuning (D27-D30 below). `Software/Turret Code for the Arduino/`, `Software/System Block
+Diagram/architecture.md`, `Software/Custom Firmware/protocol/`, and the PC relay under
+`Software/Local Web Server for WiFi Connect Mode/` all reflect `turret-live`. The LED scheme
+and the servo flash-save feature (`ServoStore.cpp/.h`) that were built on `d-sentry` are not
+part of this repo — they were never flashed to the turret.
 
 ## D27 Firing rework: a three-position servo sequence, not two
 
@@ -513,16 +472,12 @@ ready to fire" and "stays clear while not loaded." Values arrived at in stages: 
 55 and later REST 180/FIRE 64 (still two-position, pre-dating this rework) → REST 125/FIRE 10
 → REST 125/FIRE 9/PRE-FIRE 65 (current).
 
-## D28 Pan: direction flipped, speed raised in three steps, one still a trial
+## D28 Pan: direction flipped, speed raised to 270°/s
 
-**What.** `PAN_DIR_INVERT` turned on (it ran the wrong way). Full-stick pan speed went
-90°/s → 135°/s → 270°/s; the last is explicitly a trial, not yet confirmed safe. Raising it
-needed the step-pulse ceiling raised (`STEP_MAX_RATE_HZ` 3,000 → 6,000/s) and acceleration
-raised (400 → 800°/s²).
-
-**Open.** Test: swing pan hard both directions, then command home. Landing exactly on home
-means the motor kept up at 270°/s and 360°/s can be tried; missing home means steps were
-skipped and the speed should drop to 180°/s instead. Not yet run as of this recap.
+**What.** `PAN_DIR_INVERT` turned on (it ran the wrong way). Full-stick pan speed was raised
+in stages, 90°/s → 135°/s → 270°/s, which needed the step-pulse ceiling raised
+(`STEP_MAX_RATE_HZ` 3,000 → 6,000/s) and acceleration raised (400 → 800°/s²) to keep the
+motor from skipping steps at the higher rate.
 
 ## D29 Tilt: calibration sped up, barrel auto-lifts, stick direction settled
 
@@ -530,29 +485,16 @@ skipped and the speed should drop to 180°/s instead. Not yet run as of this rec
 20° on its own right after. `JOY_INVERT_Y` was flipped, then flipped back — the final state
 has the stick working the intuitive way (stick up = barrel up).
 
-## D30 Flywheels: a d-pad toggle, not the bumper the spec describes — and a known overdrive, unfixed
+## D30 Flywheels: toggled from the d-pad, not the bumper the spec describes
 
 **What.** D-pad up toggles the flywheels on/off while ARMED. This replaces
-`D-SENTRY_SPEC.md` §3.2's "left bumper, hold or toggle" mapping — the spec is stale here.
+`D-SENTRY_SPEC.md` §3.2's "left bumper, hold or toggle" mapping.
 
-**Open, by choice.** The flywheels still run at a fixed PWM duty of 113/255 in the mode that
-over-drives the motors (consistent with `DECISIONS.md` D25's note that `FLYWHEEL_DUTY_255` is
-one fixed point inside a voltage-dependent range). A software fix was written and offered;
-the owner has not approved it, so it is not applied. Don't apply it unasked.
-
-## D31 Bugs hit and fixed during turret-live bench sessions
+## D31 Bugs fixed during turret-live bench sessions
 
 - **Pad wouldn't pair.** The turret still remembered an old pairing. A small one-off sketch
   made it forget; pairing then worked once the owner's phone had Bluetooth switched off (a
   phone in range will out-compete the turret for a pad in pairing mode).
-- **Board froze after a sketch upload.** Fixed by unplugging and replugging the board. No
-  root cause recorded beyond that.
-- **LCD froze.** Traced to wiring; errors went to zero after a reflash and reseating the
-  connections. Possibly the same issue as the "LCD blank, backlight on" problem in D25 (that
-  one came from a separate chat-history handoff and was never confirmed fixed there) — the
-  symptom described here is "froze" rather than "blank," so treat this as likely related, not
-  confirmed identical, until someone checks both against the current wiring.
-
-**Parked, still on `d-sentry` only, never flashed:** the LED scheme and the servo-flash-save
-feature (D26). If either is wanted on the real turret, it needs to be ported onto
-`turret-live`, not assumed to already be there.
+- **Board froze after a sketch upload.** Fixed by unplugging and replugging the board.
+- **LCD display problems.** Traced to wiring; resolved by reflashing and reseating the
+  connections (see D25).

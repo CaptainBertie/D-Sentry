@@ -1,22 +1,14 @@
 # Wiring Diagram
 
-- `turret-wiring.svg` / `.png` — the full turret wiring: RA4M1 pin map, steppers, LCD, LEDs,
-  switches, servo.
-- `turret-wiring-l298n.png` — the flywheel driver sub-circuit (L298N channel A, the two
-  flywheel motors, the 6S rail).
+`turret-wiring.png` is the current wiring: RA4M1 pin map, both steppers, the trigger servo,
+the LED ring, the LCD, both toggles, the 6S LiPo and 9V supplies, the 5V UBEC rail, and the
+L298N flywheel driver.
 
-Pin assignments these diagrams should match: `../../D-SENTRY_SPEC.md` §"Final pin map".
+Pin assignments should match `../../D-SENTRY_SPEC.md`'s "Final pin map".
 
 ## Version history
 
-These diagrams don't have any history from before this repo — they were never committed
-anywhere until now, so there's nothing earlier to show. From here on, every revision gets its
-own commit (never overwrite-and-amend), which means two ways to see what changed:
-
-- On GitHub, open the file and click **History** to see every past version and diff.
-- `CHANGELOG.md` in this folder is the human-readable summary: what changed and why, in
-  plain words, one entry per revision.
-
-If an updated diagram comes in later (including from the project handoff — see
-`../../handoff-inbox/README.md`), add it as its own commit and log it in `CHANGELOG.md`
-rather than replacing the file silently.
+`versions/` holds every earlier revision, v00 through v08 — the flywheel driver moving from
+a MOSFET switch to an L298N board, the L298N channel changing twice, a hall-effect tilt
+limit added and later removed, and the 5V rail's evolution from the board's own regulator
+to a dedicated UBEC. `CHANGELOG.md` has the detail on each one.

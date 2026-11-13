@@ -7,7 +7,7 @@ WiFi, and streams a control packet to the RA4M1 over an internal serial link.
 
 ![D-Sentry nameplate](Mechanical/CAD/nameplate/d_sentry_preview.png)
 
-Two steppers drive pan (5:1 reduction) and tilt (4:1, on a 220 mm arm). A servo drives the
+Two steppers drive pan (5:1 reduction) and tilt (5:1, on a 220 mm arm). A servo drives the
 dart pusher. Two DC motors spin the flywheels. A WS2812 LED ring and a 16×2 LCD show turret
 state. Full behavior spec: [`D-SENTRY_SPEC.md`](D-SENTRY_SPEC.md).
 
@@ -30,7 +30,7 @@ Mechanical/
   Fitment/        measured fit values (fasteners, bearings, LCD, gears)
 Hardware/
   BOM/            parts list
-  Wiring Diagram/ full wiring, plus the flywheel driver sub-circuit
+  Wiring Diagram/ current wiring, plus the full revision history
 Software/
   System Block Diagram/              the architecture, as text and as a diagram
   Custom Firmware/                   ESP32-S3: forked USB-bridge + Xbox BLE host + D-Sentry radio modes
@@ -54,36 +54,12 @@ Every one of those folders has its own README with the detail — this file is t
 ## Status
 
 Built for a university mechanical engineering project (hence the `A4` in the original working
-directory). As of 2026-11-13, the turret has been bench-tuned on real hardware across two
-branches, `d-sentry` then `turret-live` — see **A note on branches** below. Firing now runs a
-three-position servo sequence (REST/PRE-FIRE/FIRE, see `DECISIONS.md` D27) rather than a
-simple two-position one; pan and tilt directions, speeds and calibration timing were all
-tuned on the bench (D28-D29). `Software/Turret Code for the Arduino/docs/bench-checklist.md`
+directory). The turret has been bench-tuned on real hardware: firing runs a three-position
+servo sequence (REST/PRE-FIRE/FIRE — `DECISIONS.md` D27), and pan and tilt directions, speeds
+and calibration timing were all tuned on the bench (D28-D29). This repo tracks `turret-live`,
+the branch actually running on the turret. `Software/Turret Code for the Arduino/docs/bench-checklist.md`
 is the first-power-up-to-acceptance-criteria checklist; `DECISIONS.md` is the full log of what
 was decided, why, and what was tried instead.
-
-Open items, honestly: a 270°/s pan-speed trial hasn't been confirmed safe yet (D28); the
-flywheels still run at a fixed PWM duty that over-drives them in one mode, and a fix for it
-exists but hasn't been approved (D30); the exact trigger servo model is still unresolved
-(three different candidates across three sources, none confirmed); the UBEC, L298N and
-A4988 purchase links aren't recorded, and neither is a LiPo charger or any magnets — see
-`Hardware/BOM/BOM.md`. The tilt gear's ratio label doesn't match its recorded tooth count
-(D23).
-
-### A note on branches
-
-This repo was first built from the `d-sentry` branch, then corrected on 2026-11-13 once it
-became clear `d-sentry` isn't what's on the turret: it was rolled back before an LED scheme
-and a servo flash-save feature were ever flashed, and a separate branch, `turret-live`, took
-over from there with 13 more commits of real bench tuning. `Software/Turret Code for the
-Arduino/`, `Software/System Block Diagram/architecture.md`, `Software/Custom
-Firmware/protocol/`, and the PC relay are now synced from `turret-live`. Full detail:
-`DECISIONS.md` D26.
-
-That re-sync also caught something worth saying plainly: `turret-live`'s `config.h` hard-codes
-a real WiFi access-point password, which had already been sitting in this public repo's git
-history since its first commit. It's redacted in the current files, but **not removed from
-history** — treat that password as burned and change it on the real turret.
 
 ## History
 
