@@ -61,8 +61,12 @@ is the first-power-up-to-acceptance-criteria checklist; `DECISIONS.md` is the fu
 was decided, why, and what was tried instead.
 
 Open items, honestly: `Mechanical/Fitment/` has a template with the structure filled in but
-the actual measured fit values still TODO; a few BOM rows (fastener/bearing/magnet sizes) are
-marked unknown pending those same measurements.
+the actual measured fit values still TODO (confirmed never recorded anywhere, not just
+missing locally); a few BOM rows (fastener/bearing/magnet sizes, exact servo/stepper models)
+are unresolved or conflict with each other — see `Hardware/BOM/BOM.md`. The build has also
+moved past the spec in a few places since 2 Nov — a 5 V UBEC was added, the tilt gear's ratio
+label doesn't match its recorded tooth count, and the LCD is currently blank — all logged as
+`DECISIONS.md` D20-D25.
 
 ## History
 
@@ -75,9 +79,9 @@ against a fake hardware layer before ever running on the real board, then bench-
 real turret the same afternoon. Every non-obvious decision along the way, and every
 alternative considered, is recorded in `DECISIONS.md`.
 
-Partway through, modeling this turret's gears by hand got tedious enough that we built
-**GearForge**, a Fusion 360 add-in for generating parametric ISO gear profiles — see
-`Mechanical/CAD/README.md`.
+Partway through, modeling gears by hand got tedious enough that we also built **GearForge**,
+a separate Fusion 360 add-in for generating parametric ISO gear profiles — whether it's
+actually what generated this turret's own gears is unconfirmed; see `Mechanical/CAD/README.md`.
 
 ## License
 

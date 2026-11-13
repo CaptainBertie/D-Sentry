@@ -23,4 +23,13 @@ account, including this one. The process is:
 
 | Date | What came in | Folded into |
 |---|---|---|
-| — | (nothing yet) | — |
+| 2026-11-13 | [D-Sentry Handoff: BOM and Sources](https://claude.ai/artifact/8HwwP86NgFGLKoiiMxhWYn) | `Hardware/BOM/BOM.md` |
+| 2026-11-13 | [D-Sentry Handoff: Mechanical Findings](https://claude.ai/artifact/Dep7RSri2VmU5ZspZRsshG) (fitment, rack iteration, GearForge) | `Mechanical/Fitment/README.md`, `Mechanical/Gcode/README.md`, `Mechanical/CAD/README.md` |
+| 2026-11-13 | [D-Sentry Handoff: Hardware Decisions](https://claude.ai/artifact/EzHPWaFktqU3dXSaSUNg28) (UBEC, flywheel driver history, gear ratio label mismatch, open items, wiring-diagram provenance) | `DECISIONS.md` D20-D25, `Hardware/Wiring Diagram/CHANGELOG.md` |
+| 2026-11-13 | [D-Sentry Architecture](https://claude.ai/artifact/VsKxo5CPpywQSYmbRMB9uv) — a pre-existing artifact surfaced while searching, not a handoff writeup | `Software/System Block Diagram/firmware-architecture.html` |
+
+None of the three handoff artifacts have been revised more than once (each is "v1 only" per
+the session that made them), so there was no multi-version history to pull for those. The
+wiring diagrams specifically turned out to have real prior versions, just not ones
+reachable this way — see `../Hardware/Wiring Diagram/CHANGELOG.md` for what's known about
+them.

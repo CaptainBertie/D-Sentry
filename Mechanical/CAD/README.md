@@ -17,8 +17,21 @@
 
 ## GearForge
 
-The gear parts in this project — the planetary pan reduction, the tilt spur gear, the
-rack-and-pinion shooter mechanism, the nylon pan pinion (`CFPinion`) — were modeled with
-**GearForge**, a Fusion 360 add-in we built alongside D-Sentry for generating parametric ISO
-gear profiles (spur, helical, herringbone, internal, worm+wheel, rack) instead of hand-drawing
-involute teeth. It's a separate project, not vendored into this repo.
+**GearForge** is a Fusion 360 add-in we built alongside this project, for generating
+parametric ISO gear profiles (spur, helical, herringbone, internal, worm+wheel, rack)
+instead of hand-drawing involute teeth. It's a separate project, not vendored into this
+repo.
+
+Earlier revisions of this page claimed it was used for every gear part here. A 2026-11-13
+handoff checked that against chat history and found it's weaker than that:
+
+- **Tilt pair (8T/40T):** probable, not confirmed. Settings matching a "Gear Forge" add-in
+  were requested and given (module 2, 20°, ISO 53, +0.6/−0.6 shift), but no chat confirms the
+  gears were actually generated that way, and a *different* free add-in, "GF Gear Generator",
+  was also named in a related chat with a dialog that matches just as well. "Gear Forge" in
+  that history may mean either tool.
+- **Pan planetary (5:1, 72T ring):** built with Fusion's own built-in Spur Gear tool plus a
+  Combine-cut for the ring, per the instructions on record — not GearForge.
+- **Rack-and-pinion shooter mechanism, `CFPinion`:** not mentioned in any chat found.
+
+Treat "GearForge made this turret's gears" as unconfirmed, not as this repo's history.

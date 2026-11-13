@@ -11,7 +11,10 @@ pinion gear.
   `Rack6`).
 
 **One open question:** no file in this project records which rack iteration (`Rack` –
-`Rack6`) ended up on the built turret, if any did — they're all filed under `testing/`. There
-are also two `Frame` gcode files with very different print times (27 minutes vs. 18 hours 23
-minutes); both are kept under `final/` rather than guessing which one is current. If you know
-the answers, move the right files and delete the rest.
+`Rack6`) ended up on the built turret, if any did — they're all filed under `testing/`. A
+2026-11-13 handoff checked a separate Claude.ai Project's chat history for this too and found
+the same gap: no chat mentions these gcode files or any Rack1-Rack6 iteration by name, only
+an earlier rack design (module 2, 20T pinion, 62 mm rack) that doesn't map cleanly onto any
+of the six. There are also two `Frame` gcode files with very different print times (27
+minutes vs. 18 hours 23 minutes); both are kept under `final/` rather than guessing which one
+is current. If you know the answers, move the right files and delete the rest.

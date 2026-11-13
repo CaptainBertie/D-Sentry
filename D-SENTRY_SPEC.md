@@ -4,6 +4,12 @@
 **Owner:** Bigman. He tunes every number; you build every function.
 **Companion file:** `config.h` — the single tunables file. It is already written. Every pin, speed, angle, colour, timeout and threshold in the system must come from it. No other file may hard-code one.
 
+> **This spec is known to be out of date in places** (confirmed 2026-11-13, see `DECISIONS.md`
+> D20-D25): a 5 V UBEC was added that §13 originally ruled out, the tilt reduction's tooth
+> count doesn't match its "4:1" label here, and the stall-sense tap (§8.1) and microstep
+> setting (§8.3) are still undecided. Treat the hardware table below as a starting point, not
+> as current fact.
+
 ---
 
 ## 1. What the system is

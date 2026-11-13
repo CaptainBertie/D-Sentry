@@ -1,0 +1,529 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>D-Sentry Architecture</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --font-sans:"IBM Plex Sans",-apple-system,Helvetica,Arial,sans-serif;
+    --font-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+    --bg:#e8edf1;
+    --bg-grid:rgba(27,42,58,0.07);
+    --surface:#ffffff;
+    --ink:#182636;
+    --ink-dim:#5c6c7c;
+    --border:#c3ccd4;
+    --control:#a33327;
+    --control-soft:#f3dad6;
+    --telemetry:#136b76;
+    --telemetry-soft:#d6eaec;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      color-scheme:dark;
+      --bg:#0c1b2c;
+      --bg-grid:rgba(210,225,240,0.07);
+      --surface:#122a42;
+      --ink:#e7eef5;
+      --ink-dim:#93a8bc;
+      --border:#2c4760;
+      --control:#ef6a57;
+      --control-soft:#3a2420;
+      --telemetry:#5fd0db;
+      --telemetry-soft:#16333a;
+    }
+  }
+  :root[data-theme="dark"]{
+    color-scheme:dark;
+    --bg:#0c1b2c;
+    --bg-grid:rgba(210,225,240,0.07);
+    --surface:#122a42;
+    --ink:#e7eef5;
+    --ink-dim:#93a8bc;
+    --border:#2c4760;
+    --control:#ef6a57;
+    --control-soft:#3a2420;
+    --telemetry:#5fd0db;
+    --telemetry-soft:#16333a;
+  }
+  *{box-sizing:border-box;}
+  body{
+    background:var(--bg) repeating-linear-gradient(0deg,var(--bg-grid) 0 1px,transparent 1px 40px),
+      var(--bg) repeating-linear-gradient(90deg,var(--bg-grid) 0 1px,transparent 1px 40px);
+    color:var(--ink);
+    font-family:var(--font-sans);
+    padding-inline:20px;
+    padding-block:28px 60px;
+  }
+  main{max-width:1040px;margin:0 auto;}
+  .eyebrow{
+    font-family:var(--font-mono);
+    font-size:11px;
+    letter-spacing:.12em;
+    text-transform:uppercase;
+    color:var(--control);
+    font-weight:600;
+  }
+  h1{
+    font-size:clamp(24px,4vw,32px);
+    line-height:1.15;
+    margin:8px 0 10px;
+    text-wrap:balance;
+    font-weight:700;
+  }
+  .dek{
+    color:var(--ink-dim);
+    max-width:68ch;
+    font-size:15px;
+    line-height:1.55;
+    margin:0 0 22px;
+  }
+  .dek code, p code, figcaption code{
+    font-family:var(--font-mono);
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:4px;
+    padding:0 4px;
+    font-size:.92em;
+  }
+  .legend{
+    display:flex;
+    flex-wrap:wrap;
+    gap:10px 18px;
+    padding:12px 16px;
+    margin-bottom:34px;
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:10px;
+    font-size:12.5px;
+    color:var(--ink-dim);
+  }
+  .legend b{color:var(--ink);font-weight:600;}
+  .swatch{
+    display:inline-flex;
+    align-items:center;
+    gap:7px;
+    white-space:nowrap;
+  }
+  .swatch .line{width:20px;height:0;border-top:3px solid;display:inline-block;}
+  .swatch.control .line{border-color:var(--control);}
+  .swatch.telemetry .line{border-color:var(--telemetry);}
+  .swatch.ink .line{border-top-style:solid;border-color:var(--ink-dim);}
+  .swatch.override .line{border-color:var(--control);border-top-width:5px;}
+
+  section{margin-top:44px;}
+  section h2{
+    font-size:19px;
+    margin:0 0 4px;
+    display:flex;
+    align-items:baseline;
+    gap:10px;
+  }
+  section h2 .n{
+    font-family:var(--font-mono);
+    color:var(--control);
+    font-size:13px;
+  }
+  section > p{
+    color:var(--ink-dim);
+    font-size:14.5px;
+    max-width:70ch;
+    line-height:1.5;
+    margin:0 0 18px;
+  }
+  figure{margin:0 0 10px;}
+  .scroller{
+    overflow-x:auto;
+    border:1px solid var(--border);
+    border-radius:12px;
+    background:var(--surface);
+    padding:6px;
+  }
+  svg.diagram{
+    display:block;
+    width:100%;
+    min-width:720px;
+    height:auto;
+  }
+  figcaption{
+    font-size:12.5px;
+    color:var(--ink-dim);
+    margin-top:8px;
+    line-height:1.5;
+    max-width:76ch;
+  }
+  hr{
+    border:none;
+    border-top:1px dashed var(--border);
+    margin:44px 0 0;
+  }
+  footer{
+    margin-top:50px;
+    padding-top:16px;
+    border-top:1px solid var(--border);
+    font-family:var(--font-mono);
+    font-size:11.5px;
+    color:var(--ink-dim);
+  }
+
+  /* --- SVG node styles (shared classes, used inside inline SVGs) --- */
+  .box{fill:var(--surface);stroke:var(--border);stroke-width:1.5;}
+  .node.brain .box,.node.decide .box{stroke:var(--control);stroke-width:2.5;}
+  .node.optional .box{stroke-dasharray:5 4;}
+  .node.fault .box{stroke:var(--control);stroke-dasharray:4 3;}
+  .title{font-family:var(--font-sans);font-weight:600;fill:var(--ink);font-size:13px;}
+  .title.sm{font-size:12px;}
+  .sub{font-family:var(--font-sans);fill:var(--ink-dim);font-size:11px;}
+  .sub.italic{font-style:italic;}
+  .mono{font-family:var(--font-mono);fill:var(--ink-dim);font-size:10px;}
+  .tag{font-family:var(--font-mono);fill:var(--control);font-size:10px;letter-spacing:.06em;text-transform:uppercase;font-weight:600;}
+  .phase-label{font-family:var(--font-mono);fill:var(--ink-dim);font-size:11px;letter-spacing:.04em;}
+
+  .arrow{fill:none;stroke-width:2;}
+  .arrow.control{stroke:var(--control);}
+  .arrow.telemetry{stroke:var(--telemetry);}
+  .arrow.ink{stroke:var(--ink-dim);}
+  .arrow.dash{stroke-dasharray:7 5;}
+  .arrow.dashsm{stroke-dasharray:4 3;}
+  .arrow.override{stroke-width:3.5;}
+  .mk-control{fill:var(--control);}
+  .mk-telemetry{fill:var(--telemetry);}
+  .mk-ink{fill:var(--ink-dim);}
+
+  .label-bg{fill:var(--bg);}
+  .lbl{font-family:var(--font-mono);font-size:10.5px;text-anchor:middle;}
+  .lbl.control{fill:var(--control);}
+  .lbl.telemetry{fill:var(--telemetry);}
+  .lbl.ink{fill:var(--ink-dim);}
+  .lbl.plain{font-family:var(--font-sans);}
+
+  .phase-box{fill:none;stroke:var(--border);stroke-width:1.5;}
+  .phase-box.dashed{stroke-dasharray:6 5;}
+
+  @media (prefers-reduced-motion:no-preference){
+    .node{transition:opacity .2s;}
+  }
+</style>
+
+<p class="eyebrow">D-SENTRY &middot; FIRMWARE ARCHITECTURE</p>
+<h1>How the turret decides, and what it's wired to</h1>
+<p class="dek">Two diagrams built from <code>docs/architecture.md</code> and <code>firmware-ra4m1/dsentry/src/App.cpp</code>: first, every path a button press can take to reach the RA4M1's motors and servo &mdash; and which one wins when more than one is live. Second, the exact order <code>App::loop()</code> runs, forever, and the state machine its one decision-maker steps through.</p>
+
+<div class="legend">
+  <span class="swatch control"><span class="line"></span><b>control data</b> &mdash; commands the turret acts on</span>
+  <span class="swatch telemetry"><span class="line"></span><b>telemetry / status</b> &mdash; reported back</span>
+  <span class="swatch ink"><span class="line"></span><b>mechanical / sensor</b> wiring</span>
+  <span class="swatch override"><span class="line"></span><b>bench override</b> &mdash; always wins</span>
+</div>
+
+<section id="block-diagram">
+  <h2><span class="n">01</span> System block diagram</h2>
+  <p>The Xbox pad reaches the RA4M1 brain by one of three paths, never more than one at a time. A valid packet over the USB bench cable always beats the radio, and switching which path is active counts as a link loss &mdash; the turret stops and comes back disarmed.</p>
+  <figure>
+    <div class="scroller">
+<svg class="diagram" viewBox="0 0 1000 700" role="img" aria-label="Block diagram: an Xbox pad reaches the RA4M1 turret brain over BLE via the ESP32, over WiFi via the PC relay and ESP32, or directly over USB from the PC relay, which always wins; the RA4M1 then drives the pan/tilt steppers, trigger servo, flywheel motors and LED/LCD display, and reads the stall sensor and toggles.">
+  <defs>
+    <marker id="a1c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="mk-control"/></marker>
+    <marker id="a1t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="mk-telemetry"/></marker>
+    <marker id="a1i" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="mk-ink"/></marker>
+  </defs>
+
+  <!-- pad -->
+  <g class="node">
+    <rect class="box" x="380" y="20" width="240" height="70" rx="10"/>
+    <text class="title" x="500" y="50" text-anchor="middle">Xbox controller</text>
+    <text class="mono" x="500" y="70" text-anchor="middle">BLE &middot; model 1914 / 1708</text>
+  </g>
+
+  <!-- esp32 -->
+  <g class="node">
+    <rect class="box" x="60" y="150" width="280" height="90" rx="10"/>
+    <text class="title" x="200" y="178" text-anchor="middle">ESP32-S3</text>
+    <text class="sub" x="200" y="196" text-anchor="middle">radio + USB bridge (NimBLE fork)</text>
+    <text class="mono" x="200" y="213" text-anchor="middle">BLE client &middot; WiFi UDP/AP</text>
+    <text class="mono" x="200" y="227" text-anchor="middle">USB passthrough to RA4M1</text>
+  </g>
+
+  <!-- mac -->
+  <g class="node">
+    <rect class="box" x="660" y="150" width="280" height="90" rx="10"/>
+    <text class="title" x="800" y="178" text-anchor="middle">Mac &mdash; PC relay + dashboard</text>
+    <text class="sub" x="800" y="196" text-anchor="middle">dsentry_relay.py + web/index.html</text>
+    <text class="mono" x="800" y="213" text-anchor="middle">pygame pad read</text>
+    <text class="mono" x="800" y="227" text-anchor="middle">SSE telemetry to the browser</text>
+  </g>
+
+  <!-- RA4M1 brain -->
+  <g class="node brain">
+    <rect class="box" x="340" y="340" width="320" height="120" rx="12"/>
+    <text class="title" x="500" y="372" text-anchor="middle" style="font-size:15px">RA4M1 &mdash; turret brain</text>
+    <text class="sub" x="500" y="391" text-anchor="middle">dsentry firmware, App::loop()</text>
+    <text class="mono" x="500" y="407" text-anchor="middle">Arduino UNO R4 WiFi</text>
+    <text class="sub italic" x="500" y="425" text-anchor="middle">the only place that decides who may act</text>
+    <text class="sub italic" x="500" y="440" text-anchor="middle">(TurretState &mdash; see &sect;2)</text>
+  </g>
+
+  <!-- sensors & switches -->
+  <g class="node">
+    <rect class="box" x="20" y="340" width="240" height="120" rx="10"/>
+    <text class="title sm" x="140" y="370" text-anchor="middle">Sensors &amp; switches</text>
+    <text class="sub" x="140" y="390" text-anchor="middle">stall current-sense</text>
+    <text class="sub" x="140" y="406" text-anchor="middle">(analog, pan/tilt motors)</text>
+    <text class="sub" x="140" y="426" text-anchor="middle">power toggle</text>
+    <text class="sub" x="140" y="442" text-anchor="middle">BT / WiFi mode toggle</text>
+  </g>
+
+  <!-- outputs row -->
+  <g class="node">
+    <rect class="box" x="30" y="580" width="210" height="90" rx="10"/>
+    <text class="title sm" x="135" y="612" text-anchor="middle">Pan / tilt steppers</text>
+    <text class="mono" x="135" y="632" text-anchor="middle">GPT0/GPT1 step+dir ISR</text>
+    <text class="mono" x="135" y="647" text-anchor="middle">1 step/edge, DWT-timed</text>
+  </g>
+  <g class="node">
+    <rect class="box" x="270" y="580" width="210" height="90" rx="10"/>
+    <text class="title sm" x="375" y="612" text-anchor="middle">Trigger servo</text>
+    <text class="mono" x="375" y="632" text-anchor="middle">PwmOut, D12, 50 Hz</text>
+    <text class="mono" x="375" y="647" text-anchor="middle">REST &harr; FIRE sweep</text>
+  </g>
+  <g class="node">
+    <rect class="box" x="510" y="580" width="210" height="90" rx="10"/>
+    <text class="title sm" x="615" y="612" text-anchor="middle">Flywheel motors</text>
+    <text class="mono" x="615" y="632" text-anchor="middle">L298N, PWM on ENA</text>
+    <text class="mono" x="615" y="647" text-anchor="middle">ramped spin-up</text>
+  </g>
+  <g class="node">
+    <rect class="box" x="750" y="580" width="220" height="90" rx="10"/>
+    <text class="title sm" x="860" y="612" text-anchor="middle">LED ring + LCD 16&times;2</text>
+    <text class="mono" x="860" y="632" text-anchor="middle">NeoPixel &times;8 &middot; I&sup2;C</text>
+    <text class="mono" x="860" y="647" text-anchor="middle">one DisplayModel</text>
+  </g>
+
+  <!-- arrows: pad to esp32 / mac (one of two, by mode toggle) -->
+  <path class="arrow control dash" d="M470,90 L220,150" marker-end="url(#a1c)"/>
+  <path class="arrow control dash" d="M530,90 L780,150" marker-end="url(#a1c)"/>
+  <g><rect class="label-bg" x="300" y="106" width="76" height="18" rx="3"/><text class="lbl control" x="338" y="119">BT mode</text></g>
+  <g><rect class="label-bg" x="630" y="106" width="88" height="18" rx="3"/><text class="lbl control" x="674" y="119">WiFi mode</text></g>
+
+  <!-- esp32 <-> mac (wifi path) -->
+  <path class="arrow control" d="M660,178 L340,178" marker-end="url(#a1c)"/>
+  <path class="arrow telemetry" d="M340,210 L660,210" marker-end="url(#a1t)"/>
+  <g><rect class="label-bg" x="382" y="160" width="236" height="16" rx="3"/><text class="lbl control" x="500" y="172">UDP ControlPacket @ CONTROL_PACKET_HZ</text></g>
+  <g><rect class="label-bg" x="402" y="218" width="196" height="16" rx="3"/><text class="lbl telemetry" x="500" y="230">UDP Status + Telemetry</text></g>
+
+  <!-- esp32 <-> ra4m1 (at link) -->
+  <path class="arrow control" d="M230,240 L410,340" marker-end="url(#a1c)"/>
+  <path class="arrow telemetry" d="M460,340 L270,240" marker-end="url(#a1t)"/>
+  <g><rect class="label-bg" x="210" y="266" width="186" height="16" rx="3"/><text class="lbl control" x="303" y="278">AT+XBOXSTATE? (Serial2)</text></g>
+  <g><rect class="label-bg" x="205" y="300" width="176" height="16" rx="3"/><text class="lbl telemetry" x="293" y="312">AT+DSS / AT+DST reply</text></g>
+
+  <!-- mac <-> ra4m1 (usb bench override) -->
+  <path class="arrow control override" d="M760,240 L580,340" marker-end="url(#a1c)"/>
+  <path class="arrow telemetry" d="M620,340 L820,240" marker-end="url(#a1t)"/>
+  <g><rect class="label-bg" x="602" y="270" width="150" height="16" rx="3"/><text class="lbl control" x="677" y="282">USB ControlPacket</text></g>
+  <g><rect class="label-bg" x="612" y="288" width="168" height="16" rx="3"/><text class="lbl control" x="696" y="300" style="font-weight:600">bench override &mdash; WINS</text></g>
+  <g><rect class="label-bg" x="700" y="312" width="214" height="16" rx="3"/><text class="lbl telemetry" x="807" y="324">USB: debug text + Status/Telemetry</text></g>
+
+  <!-- sensors -> ra4m1 -->
+  <path class="arrow ink" d="M260,400 L340,400" marker-end="url(#a1i)"/>
+  <g><rect class="label-bg" x="195" y="376" width="200" height="16" rx="3"/><text class="lbl ink" x="295" y="388">read each loop(), not an interrupt</text></g>
+
+  <!-- ra4m1 -> outputs -->
+  <path class="arrow ink" d="M380,460 L150,580" marker-end="url(#a1i)"/>
+  <path class="arrow ink" d="M440,460 L390,580" marker-end="url(#a1i)"/>
+  <path class="arrow ink" d="M560,460 L605,580" marker-end="url(#a1i)"/>
+  <path class="arrow ink" d="M620,460 L850,580" marker-end="url(#a1i)"/>
+  <g><rect class="label-bg" x="195" y="520" width="104" height="16" rx="3"/><text class="lbl ink" x="247" y="532">step/dir pulses</text></g>
+  <g><rect class="label-bg" x="340" y="520" width="150" height="16" rx="3"/><text class="lbl ink" x="415" y="532">PWM angle (REST/FIRE)</text></g>
+  <g><rect class="label-bg" x="540" y="520" width="90" height="16" rx="3"/><text class="lbl ink" x="585" y="532">PWM duty</text></g>
+  <g><rect class="label-bg" x="690" y="520" width="190" height="16" rx="3"/><text class="lbl ink" x="785" y="532">LED/LCD frame, every pass</text></g>
+</svg>
+    </div>
+    <figcaption>Dashed arrows at top: the pad pairs with exactly one side, chosen by the A1 mode toggle. The USB path (thick, from the Mac) is the bench override &mdash; it wins over either radio path whenever a valid packet has arrived in the last <code>LINK_TIMEOUT_MS</code>, and swapping which source is live is itself treated as a link loss.</figcaption>
+  </figure>
+</section>
+
+<section id="flowchart">
+  <h2><span class="n">02</span> Firmware flowchart</h2>
+  <p><code>dsentry.ino</code> is two lines: <code>app.begin()</code> once, then <code>app.loop()</code> forever. Both run in a fixed order the modules depend on &mdash; this is that order, from <code>App.cpp</code>.</p>
+  <figure>
+    <div class="scroller">
+<svg class="diagram" viewBox="0 0 900 1560" role="img" aria-label="Flowchart of App::begin() and App::loop(): begin() claims hardware, starts Debug, then every module in dependency order, then TurretState and Telemetry last; loop() reads the link and inputs, resolves which control source is active, lets TurretState decide, then acts on the trigger, flywheel and motion, then renders the LEDs and LCD and reports telemetry, before repeating.">
+  <defs>
+    <marker id="a2c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="mk-control"/></marker>
+    <marker id="a2i" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="mk-ink"/></marker>
+  </defs>
+
+  <rect class="phase-box dashed" x="30" y="20" width="840" height="470" rx="14"/>
+  <text class="phase-label" x="50" y="46">App::begin() &mdash; runs once, at power-on</text>
+
+  <g class="node">
+    <rect class="box" x="100" y="70" width="700" height="60" rx="10"/>
+    <text class="title" x="450" y="94" text-anchor="middle">hal::begin()</text>
+    <text class="sub" x="450" y="112" text-anchor="middle">claims GPT0/GPT1 for the steppers first; leaves every output in a safe idle state</text>
+  </g>
+  <path class="arrow ink" d="M450,130 L450,160" marker-end="url(#a2i)"/>
+
+  <g class="node">
+    <rect class="box" x="100" y="160" width="700" height="56" rx="10"/>
+    <text class="title" x="450" y="184" text-anchor="middle">Debug.begin() + boot banner</text>
+    <text class="sub" x="450" y="202" text-anchor="middle">so every begin() below can log</text>
+  </g>
+  <path class="arrow ink" d="M450,216 L450,246" marker-end="url(#a2i)"/>
+
+  <g class="node">
+    <rect class="box" x="100" y="246" width="700" height="76" rx="10"/>
+    <text class="title" x="450" y="270" text-anchor="middle">begin() every module, in this order</text>
+    <text class="mono" x="450" y="290" text-anchor="middle">ControlLink &rarr; Inputs &rarr; StallDetector &rarr; Motion</text>
+    <text class="mono" x="450" y="305" text-anchor="middle">&rarr; Flywheel &rarr; Trigger &rarr; Leds &rarr; Lcd</text>
+  </g>
+  <path class="arrow ink" d="M450,322 L450,352" marker-end="url(#a2i)"/>
+
+  <g class="node brain">
+    <rect class="box" x="100" y="352" width="700" height="92" rx="10"/>
+    <text class="title" x="450" y="378" text-anchor="middle">TurretState.begin() &mdash; the decider, wired to all of the above</text>
+    <text class="sub" x="450" y="397" text-anchor="middle">then Telemetry.begin(), then Debug.bootWarnings()</text>
+    <text class="sub italic" x="450" y="415" text-anchor="middle">rule: no cross-module globals &mdash; every link above is a reference, set here</text>
+  </g>
+
+  <path class="arrow ink" d="M450,444 L450,520" marker-end="url(#a2i)"/>
+
+  <rect class="phase-box" x="20" y="510" width="860" height="1010" rx="14"/>
+  <text class="phase-label" x="40" y="536">App::loop() &mdash; forever, until the board loses power</text>
+
+  <g class="node">
+    <rect class="box" x="100" y="560" width="700" height="50" rx="10"/>
+    <text class="title" x="450" y="580" text-anchor="middle">hal::service()</text>
+    <text class="sub" x="450" y="597" text-anchor="middle">drains the paced USB/link TX queues &mdash; called again between every step below</text>
+  </g>
+  <path class="arrow ink" d="M450,610 L450,646" marker-end="url(#a2i)"/>
+
+  <g class="node">
+    <rect class="box" x="100" y="646" width="700" height="66" rx="10"/>
+    <text class="title" x="450" y="670" text-anchor="middle">ControlLink.update()</text>
+    <text class="sub" x="450" y="690" text-anchor="middle">reads the AT link, USB serial, and shell lines</text>
+  </g>
+  <path class="arrow ink" d="M450,712 L450,740" marker-end="url(#a2i)"/>
+
+  <polygon class="box" points="450,740 620,800 450,860 280,800"/>
+  <text class="sub" x="450" y="795" text-anchor="middle">valid USB ControlPacket</text>
+  <text class="sub" x="450" y="810" text-anchor="middle">within LINK_TIMEOUT_MS?</text>
+
+  <path class="arrow control" d="M280,800 C 280,850 330,870 350,900" marker-end="url(#a2c)"/>
+  <path class="arrow ink" d="M620,800 C 620,850 570,870 555,900" marker-end="url(#a2i)"/>
+  <g><rect class="label-bg" x="150" y="840" width="186" height="16" rx="3"/><text class="lbl control" x="243" y="852">yes &rarr; USB (bench override)</text></g>
+  <g><rect class="label-bg" x="565" y="840" width="200" height="16" rx="3"/><text class="lbl ink" x="665" y="852">no &rarr; radio, via the AT link</text></g>
+
+  <g class="node">
+    <rect class="box" x="100" y="900" width="700" height="60" rx="10"/>
+    <text class="title" x="450" y="924" text-anchor="middle">Inputs.update() + StallDetector.update()</text>
+    <text class="sub" x="450" y="942" text-anchor="middle">shape sticks/trigger/buttons from the frame; sample the stall sensor</text>
+  </g>
+  <path class="arrow ink" d="M450,960 L450,986" marker-end="url(#a2i)"/>
+
+  <g class="node optional">
+    <rect class="box" x="150" y="986" width="600" height="50" rx="10"/>
+    <text class="title sm" x="450" y="1007" text-anchor="middle">a shell line queued? &rarr; Debug.handleShellLine()</text>
+    <text class="sub" x="450" y="1024" text-anchor="middle">its action lands before TurretState decides this pass</text>
+  </g>
+  <path class="arrow ink" d="M450,1036 L450,1066" marker-end="url(#a2i)"/>
+
+  <g class="node decide">
+    <rect class="box" x="70" y="1066" width="760" height="94" rx="12"/>
+    <text class="tag" x="450" y="1088" text-anchor="middle">DECIDE</text>
+    <text class="title" x="450" y="1106" text-anchor="middle" style="font-size:15px">TurretState.update()</text>
+    <text class="sub" x="450" y="1124" text-anchor="middle">the state machine + every permission rule &mdash; arm, fire, SERVO ADJUST</text>
+    <text class="sub italic" x="450" y="1141" text-anchor="middle">see the state diagram below &darr;</text>
+  </g>
+  <path class="arrow ink" d="M450,1160 L450,1190" marker-end="url(#a2i)"/>
+
+  <text class="phase-label" x="110" y="1186" style="font-size:10px">ACT, in this order:</text>
+  <g class="node">
+    <rect class="box" x="290" y="1190" width="320" height="44" rx="8"/>
+    <text class="title sm" x="450" y="1216" text-anchor="middle">Trigger.update()</text>
+  </g>
+  <path class="arrow ink" d="M450,1234 L450,1246" marker-end="url(#a2i)"/>
+  <g class="node">
+    <rect class="box" x="290" y="1246" width="320" height="44" rx="8"/>
+    <text class="title sm" x="450" y="1272" text-anchor="middle">Flywheel.update()</text>
+  </g>
+  <path class="arrow ink" d="M450,1290 L450,1302" marker-end="url(#a2i)"/>
+  <g class="node">
+    <rect class="box" x="290" y="1302" width="320" height="44" rx="8"/>
+    <text class="title sm" x="450" y="1328" text-anchor="middle">Motion.update()</text>
+  </g>
+  <path class="arrow ink" d="M450,1346 L450,1372" marker-end="url(#a2i)"/>
+
+  <g class="node">
+    <rect class="box" x="100" y="1372" width="700" height="58" rx="10"/>
+    <text class="title" x="450" y="1396" text-anchor="middle">Leds.update() + Lcd.update()</text>
+    <text class="sub" x="450" y="1414" text-anchor="middle">render the DisplayModel TurretState just published</text>
+  </g>
+  <path class="arrow ink" d="M450,1430 L450,1452" marker-end="url(#a2i)"/>
+
+  <g class="node">
+    <rect class="box" x="100" y="1452" width="700" height="58" rx="10"/>
+    <text class="title" x="450" y="1476" text-anchor="middle">Telemetry.update() + Debug.update()</text>
+    <text class="sub" x="450" y="1494" text-anchor="middle">build the TelemetryPacket; log stats every DEBUG_STATS_INTERVAL_MS</text>
+  </g>
+
+  <path class="arrow ink" d="M800,1481 L850,1481 L850,585 L800,585" marker-end="url(#a2i)"/>
+  <g><rect class="label-bg" x="795" y="1010" width="18" height="110" rx="3"/><text class="lbl ink" x="804" y="1010" transform="rotate(90 804 1010)" text-anchor="start">&#8635; next loop() pass, forever</text></g>
+</svg>
+    </div>
+    <figcaption>Nothing in <code>loop()</code> blocks except SERVO ADJUST's save (about 50&nbsp;ms, only in DISARMED with nothing moving) &mdash; that's the one documented exception to the no-<code>delay()</code> rule.</figcaption>
+  </figure>
+
+  <figure style="margin-top:34px">
+    <div class="scroller">
+<svg class="diagram" viewBox="0 0 900 330" role="img" aria-label="State diagram: OFF leads to BOOT, then CALIBRATING, then PAIRING, then DISARMED, then ARMED; ARMED returns to DISARMED on disarm; DISARMED and ARMED both return to PAIRING on link loss; CALIBRATING, DISARMED and ARMED can all drop into FAULT on a stall or calibration timeout, returning to the previous state afterward.">
+  <defs>
+    <marker id="a3i" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="mk-ink"/></marker>
+    <marker id="a3c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="mk-control"/></marker>
+  </defs>
+
+  <g class="node"><rect class="box" x="5" y="90" width="120" height="56" rx="28"/><text class="title sm" x="65" y="123" text-anchor="middle">OFF</text></g>
+  <g class="node"><rect class="box" x="150" y="90" width="110" height="56" rx="28"/><text class="title sm" x="205" y="123" text-anchor="middle">BOOT</text></g>
+  <g class="node"><rect class="box" x="285" y="90" width="160" height="56" rx="28"/><text class="title sm" x="365" y="123" text-anchor="middle">CALIBRATING</text></g>
+  <g class="node"><rect class="box" x="470" y="90" width="120" height="56" rx="28"/><text class="title sm" x="530" y="123" text-anchor="middle">PAIRING</text></g>
+  <g class="node"><rect class="box" x="615" y="90" width="140" height="56" rx="28"/><text class="title sm" x="685" y="123" text-anchor="middle">DISARMED</text></g>
+  <g class="node brain"><rect class="box" x="775" y="90" width="110" height="56" rx="28"/><text class="title sm" x="830" y="123" text-anchor="middle">ARMED</text></g>
+  <g class="node fault"><rect class="box" x="600" y="250" width="160" height="50" rx="10"/><text class="title sm" x="680" y="280" text-anchor="middle">FAULT</text></g>
+
+  <path class="arrow ink" d="M125,118 L150,118" marker-end="url(#a3i)"/>
+  <path class="arrow ink" d="M260,118 L285,118" marker-end="url(#a3i)"/>
+  <path class="arrow ink" d="M445,118 L470,118" marker-end="url(#a3i)"/>
+  <path class="arrow ink" d="M590,118 L615,118" marker-end="url(#a3i)"/>
+  <path class="arrow ink" d="M755,118 L775,118" marker-end="url(#a3i)"/>
+
+  <g><rect class="label-bg" x="95" y="68" width="150" height="14" rx="3"/><text class="lbl ink" x="170" y="79" style="font-size:9.5px">power toggle closed</text></g>
+  <g><rect class="label-bg" x="238" y="68" width="68" height="14" rx="3"/><text class="lbl ink" x="272" y="79" style="font-size:9.5px">next tick</text></g>
+  <g><rect class="label-bg" x="398" y="68" width="78" height="14" rx="3"/><text class="lbl ink" x="437" y="79" style="font-size:9.5px">tilt zeroed</text></g>
+  <g><rect class="label-bg" x="548" y="68" width="88" height="14" rx="3"/><text class="lbl ink" x="592" y="79" style="font-size:9.5px">link connects</text></g>
+  <g><rect class="label-bg" x="690" y="60" width="110" height="24" rx="3"/><text class="lbl ink" x="745" y="70" style="font-size:9.5px">arm: trigger</text><text class="lbl ink" x="745" y="80" style="font-size:9.5px">released, held open</text></g>
+
+  <path class="arrow ink" d="M830,146 C 830,185 685,185 685,146" marker-end="url(#a3i)"/>
+  <g><rect class="label-bg" x="722" y="178" width="70" height="16" rx="3"/><text class="lbl ink" x="757" y="190">disarm</text></g>
+
+  <path class="arrow ink" d="M650,146 L650,215 L600,215" />
+  <path class="arrow ink" d="M800,146 L800,215 L650,215" />
+  <path class="arrow ink" d="M600,215 C 500,215 480,185 500,146" marker-end="url(#a3i)"/>
+  <g><rect class="label-bg" x="430" y="222" width="300" height="16" rx="3"/><text class="lbl ink" x="580" y="234">link lost (from DISARMED or ARMED) &rarr; PAIRING</text></g>
+
+  <path class="arrow control dashsm" d="M365,146 C 365,195 480,235 610,255" marker-end="url(#a3c)"/>
+  <path class="arrow control dashsm" d="M680,146 L680,250" marker-end="url(#a3c)"/>
+  <path class="arrow control dashsm" d="M810,146 C 810,200 760,230 735,250" marker-end="url(#a3c)"/>
+  <g><rect class="label-bg" x="240" y="200" width="150" height="16" rx="3"/><text class="lbl control" x="315" y="212">cal timeout (dashed)</text></g>
+  <g><rect class="label-bg" x="820" y="200" width="80" height="16" rx="3"/><text class="lbl control" x="860" y="212">stall</text></g>
+
+  <path class="arrow control dashsm" d="M600,270 C 420,270 400,180 460,146" marker-end="url(#a3c)"/>
+  <g><rect class="label-bg" x="180" y="290" width="400" height="16" rx="3"/><text class="lbl control" x="380" y="302">after STALL_FAULT_HOLD_MS &rarr; previous state (or PAIRING if the link dropped)</text></g>
+</svg>
+    </div>
+    <figcaption>What <code>TurretState.update()</code> moves through, from <code>docs/architecture.md</code> &sect;6. Solid arrows are the normal path; dashed arrows are the fault branch, which can cut in from calibrating, disarmed or armed.</figcaption>
+  </figure>
+</section>
+
+<footer>
+  Source: docs/architecture.md &middot; firmware-ra4m1/dsentry/src/App.cpp &middot; firmware-ra4m1/dsentry/src/TurretState.h &mdash; d-sentry branch, as of 2026-11-03.
+</footer>
+
+</body></html>
