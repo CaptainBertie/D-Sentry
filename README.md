@@ -60,10 +60,9 @@ and saved to flash, LED state scheme finalized. `Software/Turret Code for the Ar
 is the first-power-up-to-acceptance-criteria checklist; `DECISIONS.md` is the full log of what
 was decided, why, and what was tried instead.
 
-Open items, honestly: `Mechanical/CAD/` is missing the native Fusion 360 source for the
-turret's own parts (only sliceable meshes are here); `Mechanical/Fitment/` and `Hardware/BOM/`
-have templates with the structure filled in but the actual measured values and purchase links
-still TODO.
+Open items, honestly: `Mechanical/Fitment/` has a template with the structure filled in but
+the actual measured fit values still TODO; a few BOM rows (fastener/bearing/magnet sizes) are
+marked unknown pending those same measurements.
 
 ## History
 
