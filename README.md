@@ -76,6 +76,10 @@ against a fake hardware layer before ever running on the real board, then bench-
 real turret the same afternoon. Every non-obvious decision along the way, and every
 alternative considered, is recorded in `DECISIONS.md`.
 
+Partway through, modeling this turret's gears by hand got tedious enough that we built
+**GearForge**, a Fusion 360 add-in for generating parametric ISO gear profiles — see
+`Mechanical/CAD/README.md`.
+
 ## License
 
 The mechanical design, hardware docs, and D-Sentry's own software are **MIT**. The ESP32-S3

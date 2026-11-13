@@ -18,3 +18,11 @@ which you can 3D print from but can't edit.
 
 To make this folder complete: export the native design (F3D, or STEP if you want something
 tool-agnostic) from Fusion 360 and drop it in a `source/` folder here.
+
+## GearForge
+
+The gear parts in this project — the planetary pan reduction, the tilt spur gear, the
+rack-and-pinion shooter mechanism, the nylon pan pinion (`CFPinion`) — were modeled with
+**GearForge**, a Fusion 360 add-in we built alongside D-Sentry for generating parametric ISO
+gear profiles (spur, helical, herringbone, internal, worm+wheel, rack) instead of hand-drawing
+involute teeth. It's a separate project, not vendored into this repo.
